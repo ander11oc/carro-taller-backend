@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_role
 from app.db.session import get_db
-from app.models.entities import User
+from app.models.entities import AuditLog, User
 from app.schemas.auth import (
     LoginInput,
     TokenOutput,
@@ -27,6 +27,27 @@ def _tenant_user_or_404(db: Session, item_id: int, tenant_id: str) -> User:
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return user
+
+
+def _write_auth_audit_log(
+    db: Session,
+    actor,
+    action: str,
+    entity_id: int | None,
+    details: str,
+):
+    db.add(
+        AuditLog(
+            tenant_id=actor["tenant_id"],
+            actor_email=actor["email"],
+            role=actor.get("role", "viewer"),
+            module="users",
+            action=action,
+            entity_id=entity_id,
+            details=details,
+        )
+    )
+    db.commit()
 
 
 @router.post("/register", response_model=TokenOutput)
@@ -113,6 +134,7 @@ def create_user(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _write_auth_audit_log(db, user, "create", item.id, item.email)
     return item
 
 
@@ -132,6 +154,7 @@ def update_user(
         setattr(item, field, value)
     db.commit()
     db.refresh(item)
+    _write_auth_audit_log(db, user, "update", item.id, item.email)
     return item
 
 

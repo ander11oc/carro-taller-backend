@@ -14,7 +14,7 @@ from app.api.routes_auth import router
 from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import get_db
-from app.models.entities import User
+from app.models.entities import AuditLog, User
 
 
 class UserAdminRoutesTest(unittest.TestCase):
@@ -110,6 +110,15 @@ class UserAdminRoutesTest(unittest.TestCase):
         self.assertEqual(response.json()["email"], "newplanner@fleet.local")
         self.assertEqual(response.json()["role"], "planner")
 
+        db = self.SessionLocal()
+        log = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+        db.close()
+
+        self.assertIsNotNone(log)
+        self.assertEqual(log.module, "users")
+        self.assertEqual(log.action, "create")
+        self.assertEqual(log.details, "newplanner@fleet.local")
+
     def test_admin_updates_user_status(self):
         self.as_user("admin")
 
@@ -121,6 +130,15 @@ class UserAdminRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["full_name"], "Auditor Inactivo")
         self.assertFalse(response.json()["is_active"])
+
+        db = self.SessionLocal()
+        log = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+        db.close()
+
+        self.assertIsNotNone(log)
+        self.assertEqual(log.module, "users")
+        self.assertEqual(log.action, "update")
+        self.assertEqual(log.details, "viewer@fleet.local")
 
 
 if __name__ == "__main__":
