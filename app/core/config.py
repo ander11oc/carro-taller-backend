@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     DEFAULT_TENANT_ID: str = "tenant_local"
 
-    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173,https://quit-rotting-vocally.ngrok-free.dev"
+    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173,https://web-lyart-eight-62.vercel.app"
 
 
 settings = Settings()
