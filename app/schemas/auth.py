@@ -34,6 +34,11 @@ class UserAdminUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class PasswordChangeInput(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class UserOut(BaseModel):
     id: int
     email: str

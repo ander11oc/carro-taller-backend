@@ -140,6 +140,41 @@ class UserAdminRoutesTest(unittest.TestCase):
         self.assertEqual(log.action, "update")
         self.assertEqual(log.details, "viewer@fleet.local")
 
+    def test_user_changes_own_password_with_audit(self):
+        self.as_user("viewer", "viewer@fleet.local")
+
+        response = self.client.put(
+            "/api/v1/auth/me/password",
+            json={"current_password": "viewer123", "new_password": "viewer456"},
+        )
+
+        self.assertEqual(response.status_code, 204)
+
+        login_response = self.client.post(
+            "/api/v1/auth/login",
+            json={"email": "viewer@fleet.local", "password": "viewer456"},
+        )
+        self.assertEqual(login_response.status_code, 200)
+
+        db = self.SessionLocal()
+        log = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+        db.close()
+
+        self.assertIsNotNone(log)
+        self.assertEqual(log.module, "users")
+        self.assertEqual(log.action, "password_change")
+        self.assertEqual(log.details, "viewer@fleet.local")
+
+    def test_user_cannot_change_password_with_wrong_current_password(self):
+        self.as_user("viewer", "viewer@fleet.local")
+
+        response = self.client.put(
+            "/api/v1/auth/me/password",
+            json={"current_password": "bad-password", "new_password": "viewer456"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()

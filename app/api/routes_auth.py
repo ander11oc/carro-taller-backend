@@ -13,6 +13,7 @@ from app.schemas.auth import (
     UserAdminCreate,
     UserAdminUpdate,
     UserOut,
+    PasswordChangeInput,
 )
 from app.core.security import verify_password, create_access_token, hash_password
 from app.core.config import settings
@@ -96,6 +97,25 @@ def me(db: Session = Depends(get_db), user=Depends(get_current_user)):
         role=user["role"],
         tenant_id=user["tenant_id"],
     )
+
+
+@router.put("/me/password", status_code=204)
+def change_own_password(
+    payload: PasswordChangeInput,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    db_user = db.query(User).filter(User.email == user["email"]).first()
+    if not db_user or not db_user.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not verify_password(payload.current_password, db_user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid current password"
+        )
+    db_user.password_hash = hash_password(payload.new_password)
+    db.commit()
+    _write_auth_audit_log(db, user, "password_change", db_user.id, db_user.email)
+    return None
 
 
 @router.get("/users", response_model=list[UserOut])
