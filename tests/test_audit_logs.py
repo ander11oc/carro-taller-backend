@@ -13,6 +13,7 @@ from app.api.deps import get_current_user
 from app.api.routes_fleet import router
 from app.db.base import Base
 from app.db.session import get_db
+from app.models.entities import Vehicle
 
 
 class AuditLogRoutesTest(unittest.TestCase):
@@ -24,6 +25,21 @@ class AuditLogRoutesTest(unittest.TestCase):
         )
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
+        db = self.SessionLocal()
+        db.add(
+            Vehicle(
+                tenant_id="tenant_local",
+                plate="BASE-001",
+                brand="Toyota",
+                model="Hilux",
+                year=2025,
+                mileage=100,
+                status="active",
+                notes="base vehicle",
+            )
+        )
+        db.commit()
+        db.close()
 
         app = FastAPI()
         app.include_router(router, prefix="/api/v1")
@@ -75,6 +91,53 @@ class AuditLogRoutesTest(unittest.TestCase):
         self.assertEqual(logs[0]["module"], "vehicles")
         self.assertEqual(logs[0]["action"], "create")
         self.assertEqual(logs[0]["actor_email"], "admin@fleet.local")
+
+    def test_update_maintenance_writes_audit_log(self):
+        self.as_user("planner", "planner@fleet.local")
+
+        create_response = self.client.post(
+            "/api/v1/fleet/maintenance",
+            json={
+                "vehicle_id": 1,
+                "title": "Revision auditoria",
+                "description": "test",
+                "status": "open",
+                "priority": "normal",
+                "scheduled_for": "2026-06-04",
+                "cost": 0,
+            },
+        )
+        update_response = self.client.put(
+            f"/api/v1/fleet/maintenance/{create_response.json()['id']}",
+            json={"status": "in_progress"},
+        )
+        logs_response = self.client.get("/api/v1/fleet/audit-logs")
+
+        self.assertEqual(update_response.status_code, 200)
+        logs = logs_response.json()
+        self.assertEqual(logs[0]["module"], "maintenance")
+        self.assertEqual(logs[0]["action"], "update")
+        self.assertEqual(logs[0]["actor_email"], "planner@fleet.local")
+
+    def test_create_inventory_writes_audit_log(self):
+        self.as_user("planner", "planner@fleet.local")
+
+        create_response = self.client.post(
+            "/api/v1/fleet/inventory",
+            json={
+                "sku": "INV-AUD",
+                "name": "Filtro auditoria",
+                "stock": 2,
+                "min_stock": 1,
+                "unit_cost": 10,
+                "location": "A1",
+            },
+        )
+        logs_response = self.client.get("/api/v1/fleet/audit-logs")
+
+        self.assertEqual(create_response.status_code, 201)
+        self.assertEqual(logs_response.json()[0]["module"], "inventory")
+        self.assertEqual(logs_response.json()[0]["action"], "create")
 
     def test_viewer_can_read_audit_logs(self):
         self.as_user("viewer", "viewer@fleet.local")

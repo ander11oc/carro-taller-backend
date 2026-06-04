@@ -213,6 +213,7 @@ def create_tire(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "tires", "create", item.id, item.serial_number)
     return item
 
 
@@ -234,6 +235,7 @@ def update_tire(
     _apply_update(item, payload)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "tires", "update", item.id, item.serial_number)
     return item
 
 
@@ -241,8 +243,10 @@ def update_tire(
 def delete_tire(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     require_module_action(user, "tires", "delete")
     item = _get_or_404(db, Tire, item_id, user)
+    details = item.serial_number
     db.delete(item)
     db.commit()
+    _write_audit_log(db, user, "tires", "delete", item_id, details)
     return None
 
 
@@ -422,6 +426,7 @@ def create_fuel_log(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "fuel-logs", "create", item.id, f"vehicle {item.vehicle_id}")
     return item
 
 
@@ -443,6 +448,7 @@ def update_fuel_log(
     _apply_update(item, payload)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "fuel-logs", "update", item.id, f"vehicle {item.vehicle_id}")
     return item
 
 
@@ -452,8 +458,10 @@ def delete_fuel_log(
 ):
     require_module_action(user, "fuel-logs", "delete")
     item = _get_or_404(db, FuelLog, item_id, user)
+    details = f"vehicle {item.vehicle_id}"
     db.delete(item)
     db.commit()
+    _write_audit_log(db, user, "fuel-logs", "delete", item_id, details)
     return None
 
 
@@ -491,6 +499,7 @@ def create_inventory(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "inventory", "create", item.id, item.sku)
     return item
 
 
@@ -512,6 +521,7 @@ def update_inventory(
     _apply_update(item, payload)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "inventory", "update", item.id, item.sku)
     return item
 
 
@@ -521,8 +531,10 @@ def delete_inventory(
 ):
     require_module_action(user, "inventory", "delete")
     item = _get_or_404(db, InventoryItem, item_id, user)
+    details = item.sku
     db.delete(item)
     db.commit()
+    _write_audit_log(db, user, "inventory", "delete", item_id, details)
     return None
 
 
@@ -557,6 +569,7 @@ def create_document(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "documents", "create", item.id, item.doc_type)
     return item
 
 
@@ -578,6 +591,7 @@ def update_document(
     _apply_update(item, payload)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "documents", "update", item.id, item.doc_type)
     return item
 
 
@@ -587,8 +601,10 @@ def delete_document(
 ):
     require_module_action(user, "documents", "delete")
     item = _get_or_404(db, Document, item_id, user)
+    details = item.doc_type
     db.delete(item)
     db.commit()
+    _write_audit_log(db, user, "documents", "delete", item_id, details)
     return None
 
 
@@ -619,6 +635,7 @@ def create_maintenance(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "maintenance", "create", item.id, item.title)
     return item
 
 
@@ -642,6 +659,7 @@ def update_maintenance(
     _apply_update(item, payload)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "maintenance", "update", item.id, item.title)
     return item
 
 
@@ -651,8 +669,10 @@ def delete_maintenance(
 ):
     require_module_action(user, "maintenance", "delete")
     item = _get_or_404(db, MaintenanceOrder, item_id, user)
+    details = item.title
     db.delete(item)
     db.commit()
+    _write_audit_log(db, user, "maintenance", "delete", item_id, details)
     return None
 
 
@@ -683,6 +703,7 @@ def create_portal(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "portal", "create", item.id, item.title)
     return item
 
 
@@ -704,6 +725,7 @@ def update_portal(
     _apply_update(item, payload)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "portal", "update", item.id, item.title)
     return item
 
 
@@ -713,8 +735,10 @@ def delete_portal(
 ):
     require_module_action(user, "portal", "delete")
     item = _get_or_404(db, ClientPortalRecord, item_id, user)
+    details = item.title
     db.delete(item)
     db.commit()
+    _write_audit_log(db, user, "portal", "delete", item_id, details)
     return None
 
 
