@@ -31,13 +31,9 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_
             "role": payload.get("role", "viewer"),
         }
     except JWTError as exc:
-        if settings.APP_DEBUG:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid token: {exc.__class__.__name__}: {exc}",
-            )
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {exc.__class__.__name__}: {exc}",
         )
 
 
