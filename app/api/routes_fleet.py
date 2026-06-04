@@ -52,6 +52,7 @@ from app.schemas.fleet import (
     DashboardKpiOut,
     AlertOut,
 )
+from app.api.permissions import require_module_action
 from app.services.retired_tire_import import import_retired_tire_workbook
 from app.services.retired_tire_summary import get_retired_tire_summary
 from app.services.fleet_alerts import get_fleet_alerts
@@ -101,6 +102,7 @@ def list_vehicles(
     q: Optional[str] = Query(None),
     status_f: Optional[str] = Query(None, alias="status"),
 ):
+    require_module_action(user, "vehicles", "read")
     query = db.query(Vehicle).filter(_scope(Vehicle, user))
     if q:
         pattern = f"%{q.lower()}%"
@@ -118,6 +120,7 @@ def list_vehicles(
 def create_vehicle(
     payload: VehicleCreate, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "vehicles", "create")
     item = Vehicle(tenant_id=user["tenant_id"], **payload.model_dump())
     db.add(item)
     db.commit()
@@ -127,6 +130,7 @@ def create_vehicle(
 
 @router.get("/vehicles/{item_id}", response_model=VehicleOut)
 def get_vehicle(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_module_action(user, "vehicles", "read")
     return _get_or_404(db, Vehicle, item_id, user)
 
 
@@ -137,6 +141,7 @@ def update_vehicle(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "vehicles", "update")
     item = _get_or_404(db, Vehicle, item_id, user)
     _apply_update(item, payload)
     db.commit()
@@ -148,6 +153,7 @@ def update_vehicle(
 def delete_vehicle(
     item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "vehicles", "delete")
     item = _get_or_404(db, Vehicle, item_id, user)
     db.delete(item)
     db.commit()
@@ -163,6 +169,7 @@ def list_tires(
     user=Depends(get_current_user),
     vehicle_id: Optional[int] = None,
 ):
+    require_module_action(user, "tires", "read")
     query = db.query(Tire).filter(_scope(Tire, user))
     if vehicle_id is not None:
         query = query.filter(Tire.vehicle_id == vehicle_id)
@@ -173,6 +180,7 @@ def list_tires(
 def create_tire(
     payload: TireCreate, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "tires", "create")
     item = Tire(tenant_id=user["tenant_id"], **payload.model_dump())
     db.add(item)
     db.commit()
@@ -182,6 +190,7 @@ def create_tire(
 
 @router.get("/tires/{item_id}", response_model=TireOut)
 def get_tire(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_module_action(user, "tires", "read")
     return _get_or_404(db, Tire, item_id, user)
 
 
@@ -192,6 +201,7 @@ def update_tire(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "tires", "update")
     item = _get_or_404(db, Tire, item_id, user)
     _apply_update(item, payload)
     db.commit()
@@ -201,6 +211,7 @@ def update_tire(
 
 @router.delete("/tires/{item_id}", status_code=204)
 def delete_tire(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_module_action(user, "tires", "delete")
     item = _get_or_404(db, Tire, item_id, user)
     db.delete(item)
     db.commit()
@@ -216,6 +227,7 @@ def import_retired_tires(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "retired-tires", "import")
     try:
         return import_retired_tire_workbook(
             db, payload.workbook_path, tenant_id=user["tenant_id"]
@@ -238,6 +250,7 @@ def retired_tire_summary(
     conditions: Optional[str] = None,
     months: Optional[str] = None,
 ):
+    require_module_action(user, "retired-tires", "read")
     return get_retired_tire_summary(
         db,
         user["tenant_id"],
@@ -270,6 +283,7 @@ def list_retired_tires(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
+    require_module_action(user, "retired-tires", "read")
     query = db.query(RetiredTireRecord).filter(_scope(RetiredTireRecord, user))
     if q:
         pattern = f"%{q.lower()}%"
@@ -320,6 +334,7 @@ def list_retired_tire_conditions(
     user=Depends(get_current_user),
     zone: Optional[str] = None,
 ):
+    require_module_action(user, "retired-tire-conditions", "read")
     query = db.query(TireRetirementCondition).filter(
         _scope(TireRetirementCondition, user)
     )
@@ -334,6 +349,7 @@ def list_tire_brand_designs(
     user=Depends(get_current_user),
     brand: Optional[str] = None,
 ):
+    require_module_action(user, "tire-brand-designs", "read")
     query = db.query(TireBrandDesign).filter(_scope(TireBrandDesign, user))
     if brand:
         query = query.filter(TireBrandDesign.brand == brand)
@@ -346,6 +362,7 @@ def list_operation_companies(
     user=Depends(get_current_user),
     route: Optional[str] = None,
 ):
+    require_module_action(user, "operation-companies", "read")
     query = db.query(FleetOperationCompany).filter(_scope(FleetOperationCompany, user))
     if route:
         query = query.filter(FleetOperationCompany.route == route)
@@ -361,6 +378,7 @@ def list_fuel_logs(
     user=Depends(get_current_user),
     vehicle_id: Optional[int] = None,
 ):
+    require_module_action(user, "fuel-logs", "read")
     query = db.query(FuelLog).filter(_scope(FuelLog, user))
     if vehicle_id is not None:
         query = query.filter(FuelLog.vehicle_id == vehicle_id)
@@ -371,6 +389,7 @@ def list_fuel_logs(
 def create_fuel_log(
     payload: FuelLogCreate, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "fuel-logs", "create")
     item = FuelLog(tenant_id=user["tenant_id"], **payload.model_dump())
     db.add(item)
     db.commit()
@@ -380,6 +399,7 @@ def create_fuel_log(
 
 @router.get("/fuel-logs/{item_id}", response_model=FuelLogOut)
 def get_fuel_log(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_module_action(user, "fuel-logs", "read")
     return _get_or_404(db, FuelLog, item_id, user)
 
 
@@ -390,6 +410,7 @@ def update_fuel_log(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "fuel-logs", "update")
     item = _get_or_404(db, FuelLog, item_id, user)
     _apply_update(item, payload)
     db.commit()
@@ -401,6 +422,7 @@ def update_fuel_log(
 def delete_fuel_log(
     item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "fuel-logs", "delete")
     item = _get_or_404(db, FuelLog, item_id, user)
     db.delete(item)
     db.commit()
@@ -417,6 +439,7 @@ def list_inventory(
     q: Optional[str] = None,
     low_only: bool = False,
 ):
+    require_module_action(user, "inventory", "read")
     query = db.query(InventoryItem).filter(_scope(InventoryItem, user))
     if q:
         pattern = f"%{q.lower()}%"
@@ -435,6 +458,7 @@ def create_inventory(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "inventory", "create")
     item = InventoryItem(tenant_id=user["tenant_id"], **payload.model_dump())
     db.add(item)
     db.commit()
@@ -444,6 +468,7 @@ def create_inventory(
 
 @router.get("/inventory/{item_id}", response_model=InventoryItemOut)
 def get_inventory(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_module_action(user, "inventory", "read")
     return _get_or_404(db, InventoryItem, item_id, user)
 
 
@@ -454,6 +479,7 @@ def update_inventory(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "inventory", "update")
     item = _get_or_404(db, InventoryItem, item_id, user)
     _apply_update(item, payload)
     db.commit()
@@ -465,6 +491,7 @@ def update_inventory(
 def delete_inventory(
     item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "inventory", "delete")
     item = _get_or_404(db, InventoryItem, item_id, user)
     db.delete(item)
     db.commit()
@@ -481,6 +508,7 @@ def list_documents(
     vehicle_id: Optional[int] = None,
     expiring_in_days: Optional[int] = None,
 ):
+    require_module_action(user, "documents", "read")
     query = db.query(Document).filter(_scope(Document, user))
     if vehicle_id is not None:
         query = query.filter(Document.vehicle_id == vehicle_id)
@@ -496,6 +524,7 @@ def create_document(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "documents", "create")
     item = Document(tenant_id=user["tenant_id"], **payload.model_dump())
     db.add(item)
     db.commit()
@@ -505,6 +534,7 @@ def create_document(
 
 @router.get("/documents/{item_id}", response_model=DocumentOut)
 def get_document(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_module_action(user, "documents", "read")
     return _get_or_404(db, Document, item_id, user)
 
 
@@ -515,6 +545,7 @@ def update_document(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "documents", "update")
     item = _get_or_404(db, Document, item_id, user)
     _apply_update(item, payload)
     db.commit()
@@ -526,6 +557,7 @@ def update_document(
 def delete_document(
     item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "documents", "delete")
     item = _get_or_404(db, Document, item_id, user)
     db.delete(item)
     db.commit()
@@ -541,6 +573,7 @@ def list_maintenance(
     user=Depends(get_current_user),
     status_f: Optional[str] = Query(None, alias="status"),
 ):
+    require_module_action(user, "maintenance", "read")
     query = db.query(MaintenanceOrder).filter(_scope(MaintenanceOrder, user))
     if status_f:
         query = query.filter(MaintenanceOrder.status == status_f)
@@ -553,6 +586,7 @@ def create_maintenance(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "maintenance", "create")
     item = MaintenanceOrder(tenant_id=user["tenant_id"], **payload.model_dump())
     db.add(item)
     db.commit()
@@ -564,6 +598,7 @@ def create_maintenance(
 def get_maintenance(
     item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "maintenance", "read")
     return _get_or_404(db, MaintenanceOrder, item_id, user)
 
 
@@ -574,6 +609,7 @@ def update_maintenance(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "maintenance", "update")
     item = _get_or_404(db, MaintenanceOrder, item_id, user)
     _apply_update(item, payload)
     db.commit()
@@ -585,6 +621,7 @@ def update_maintenance(
 def delete_maintenance(
     item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "maintenance", "delete")
     item = _get_or_404(db, MaintenanceOrder, item_id, user)
     db.delete(item)
     db.commit()
@@ -598,6 +635,7 @@ def delete_maintenance(
 def list_portal(
     db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "portal", "read")
     return (
         db.query(ClientPortalRecord)
         .filter(_scope(ClientPortalRecord, user))
@@ -612,6 +650,7 @@ def create_portal(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "portal", "create")
     item = ClientPortalRecord(tenant_id=user["tenant_id"], **payload.model_dump())
     db.add(item)
     db.commit()
@@ -621,6 +660,7 @@ def create_portal(
 
 @router.get("/portal/{item_id}", response_model=ClientPortalRecordOut)
 def get_portal(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_module_action(user, "portal", "read")
     return _get_or_404(db, ClientPortalRecord, item_id, user)
 
 
@@ -631,6 +671,7 @@ def update_portal(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    require_module_action(user, "portal", "update")
     item = _get_or_404(db, ClientPortalRecord, item_id, user)
     _apply_update(item, payload)
     db.commit()
@@ -642,6 +683,7 @@ def update_portal(
 def delete_portal(
     item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
+    require_module_action(user, "portal", "delete")
     item = _get_or_404(db, ClientPortalRecord, item_id, user)
     db.delete(item)
     db.commit()
@@ -657,6 +699,7 @@ DOC_EXPIRING_WINDOW_DAYS = 30
 
 @router.get("/dashboard", response_model=DashboardKpiOut)
 def dashboard(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_module_action(user, "dashboard", "read")
     tenant = user["tenant_id"]
     vehicles_total = db.query(Vehicle).filter(Vehicle.tenant_id == tenant).count()
     vehicles_active = (
@@ -725,4 +768,5 @@ def dashboard(db: Session = Depends(get_db), user=Depends(get_current_user)):
 
 @router.get("/alerts", response_model=list[AlertOut])
 def alerts(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_module_action(user, "alerts", "read")
     return get_fleet_alerts(db, user["tenant_id"])
