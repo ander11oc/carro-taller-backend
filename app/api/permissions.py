@@ -8,6 +8,7 @@ Role = str
 ALL_MODULES = {
     "dashboard",
     "alerts",
+    "audit-logs",
     "vehicles",
     "tires",
     "retired-tires",

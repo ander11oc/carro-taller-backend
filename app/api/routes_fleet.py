@@ -19,6 +19,7 @@ from app.models.entities import (
     Document,
     MaintenanceOrder,
     ClientPortalRecord,
+    AuditLog,
 )
 from app.schemas.fleet import (
     VehicleCreate,
@@ -51,6 +52,7 @@ from app.schemas.fleet import (
     ClientPortalRecordOut,
     DashboardKpiOut,
     AlertOut,
+    AuditLogOut,
 )
 from app.api.permissions import require_module_action
 from app.services.retired_tire_import import import_retired_tire_workbook
@@ -84,6 +86,28 @@ def _get_or_404(db: Session, model, item_id: int, user):
 def _apply_update(obj, payload):
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(obj, field, value)
+
+
+def _write_audit_log(
+    db: Session,
+    user,
+    module: str,
+    action: str,
+    entity_id: int | None = None,
+    details: str = "",
+):
+    db.add(
+        AuditLog(
+            tenant_id=user["tenant_id"],
+            actor_email=user["email"],
+            role=user.get("role", "viewer"),
+            module=module,
+            action=action,
+            entity_id=entity_id,
+            details=details,
+        )
+    )
+    db.commit()
 
 
 def _csv_values(value: Optional[str]) -> list[str]:
@@ -125,6 +149,7 @@ def create_vehicle(
     db.add(item)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "vehicles", "create", item.id, item.plate)
     return item
 
 
@@ -146,6 +171,7 @@ def update_vehicle(
     _apply_update(item, payload)
     db.commit()
     db.refresh(item)
+    _write_audit_log(db, user, "vehicles", "update", item.id, item.plate)
     return item
 
 
@@ -155,8 +181,10 @@ def delete_vehicle(
 ):
     require_module_action(user, "vehicles", "delete")
     item = _get_or_404(db, Vehicle, item_id, user)
+    details = item.plate
     db.delete(item)
     db.commit()
+    _write_audit_log(db, user, "vehicles", "delete", item_id, details)
     return None
 
 
@@ -770,3 +798,19 @@ def dashboard(db: Session = Depends(get_db), user=Depends(get_current_user)):
 def alerts(db: Session = Depends(get_db), user=Depends(get_current_user)):
     require_module_action(user, "alerts", "read")
     return get_fleet_alerts(db, user["tenant_id"])
+
+
+@router.get("/audit-logs", response_model=list[AuditLogOut])
+def audit_logs(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=200),
+):
+    require_module_action(user, "audit-logs", "read")
+    return (
+        db.query(AuditLog)
+        .filter(_scope(AuditLog, user))
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .limit(limit)
+        .all()
+    )

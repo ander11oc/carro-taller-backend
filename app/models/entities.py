@@ -24,6 +24,19 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class AuditLog(Base, TimestampMixin):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    actor_email: Mapped[str] = mapped_column(String(255), index=True)
+    role: Mapped[str] = mapped_column(String(50), default="viewer")
+    module: Mapped[str] = mapped_column(String(80), index=True)
+    action: Mapped[str] = mapped_column(String(40), index=True)
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    details: Mapped[str] = mapped_column(Text, default="")
+
+
 class Vehicle(Base, TimestampMixin):
     __tablename__ = "vehicles"
 

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -342,3 +342,17 @@ class AlertOut(BaseModel):
     created_at: date
     channels: list[str] = ["web"]
     whatsapp_ready: bool = False
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    actor_email: str
+    role: str
+    module: str
+    action: str
+    entity_id: Optional[int] = None
+    details: str = ""
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
