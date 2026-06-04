@@ -5,6 +5,7 @@ from passlib.context import CryptContext
 from app.core.config import settings
 
 
+JWT_SIGNING_KEY = "carro-taller-demo-jwt-key-v1"
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -24,4 +25,4 @@ def create_access_token(subject: str, tenant_id: str, role: str) -> str:
         "role": role,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(payload, JWT_SIGNING_KEY, algorithm=settings.JWT_ALGORITHM)

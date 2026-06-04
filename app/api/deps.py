@@ -3,6 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 
 from app.core.config import settings
+from app.core.security import JWT_SIGNING_KEY
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -11,7 +12,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 def decode_access_token_payload(token: str) -> dict:
     return jwt.decode(
         token,
-        settings.JWT_SECRET_KEY,
+        JWT_SIGNING_KEY,
         algorithms=[settings.JWT_ALGORITHM],
         options={"verify_aud": False, "verify_sub": False},
     )
@@ -30,10 +31,9 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_
             "tenant_id": payload.get("tenant_id"),
             "role": payload.get("role", "viewer"),
         }
-    except JWTError as exc:
+    except JWTError:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {exc.__class__.__name__}: {exc}",
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
 
 
