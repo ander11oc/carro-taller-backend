@@ -3,7 +3,7 @@ from hashlib import sha1
 
 from sqlalchemy.orm import Session
 
-from app.models.entities import Document, InventoryItem, MaintenanceOrder, Tire
+from app.models.entities import Document, InventoryItem, MaintenanceOrder, Tire, TireEvent, VehicleTirePosition
 
 TIRE_CRITICAL_MM = 3.0
 DOC_EXPIRING_WINDOW_DAYS = 30
@@ -59,6 +59,69 @@ def get_fleet_alerts(db: Session, tenant_id: str) -> list[dict]:
                 action_url="/fleet/tires",
             )
         )
+
+    missing_positions = (
+        db.query(VehicleTirePosition)
+        .filter(
+            VehicleTirePosition.tenant_id == tenant_id,
+            VehicleTirePosition.tire_id.is_(None),
+        )
+        .all()
+    )
+    for position in missing_positions:
+        out.append(
+            make_alert(
+                severity="medium",
+                kind="vehicle_position_missing",
+                title="Vehiculo incompleto",
+                message=f"Vehiculo #{position.vehicle_id} tiene la posicion {position.position_code} sin llanta montada.",
+                entity_id=position.id,
+                entity_type="vehicle-position",
+                action_url="/fleet/tires",
+            )
+        )
+
+    latest_pressure_events = (
+        db.query(TireEvent)
+        .filter(
+            TireEvent.tenant_id == tenant_id,
+            TireEvent.event_type == "inspection",
+            TireEvent.pressure_psi.isnot(None),
+            TireEvent.tire_id.isnot(None),
+        )
+        .order_by(TireEvent.event_date.desc(), TireEvent.id.desc())
+        .all()
+    )
+    seen_tires: set[int] = set()
+    for event in latest_pressure_events:
+        if event.tire_id in seen_tires:
+            continue
+        seen_tires.add(event.tire_id)
+        tire = db.query(Tire).filter(Tire.tenant_id == tenant_id, Tire.id == event.tire_id).first()
+        if not tire:
+            continue
+        position = (
+            db.query(VehicleTirePosition)
+            .filter(
+                VehicleTirePosition.tenant_id == tenant_id,
+                VehicleTirePosition.vehicle_id == event.vehicle_id,
+                VehicleTirePosition.position_code == event.position,
+            )
+            .first()
+        )
+        target = position.target_pressure_psi if position and position.target_pressure_psi is not None else tire.target_pressure_psi
+        if target is not None and event.pressure_psi is not None and event.pressure_psi < target:
+            out.append(
+                make_alert(
+                    severity="medium",
+                    kind="tire_pressure_low",
+                    title="Presion baja",
+                    message=f"Llanta {tire.serial_number} en {event.position} registro {event.pressure_psi} PSI; objetivo {target} PSI.",
+                    entity_id=event.id,
+                    entity_type="tire-event",
+                    action_url="/fleet/tires",
+                )
+            )
 
     low_items = (
         db.query(InventoryItem)
