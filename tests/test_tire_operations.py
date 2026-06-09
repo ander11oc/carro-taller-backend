@@ -247,6 +247,36 @@ class TireOperationsTest(unittest.TestCase):
         self.assertIn("fila 502", event.novelty)
         self.assertEqual(result.import_batch_id, "llantas-test-batch")
 
+    def test_master_import_retry_same_batch_does_not_duplicate_initial_event(self):
+        payload = TireMasterImportRequest(
+            source_sheet="03_Llantas",
+            import_batch_id="retry-safe-batch",
+            source_row_start=20,
+            rows=[
+                {
+                    "Serial": "LL-RETRY-001",
+                    "Marca": "Michelin",
+                    "Diseño": "Direccional",
+                    "Medida": "295/80R22.5",
+                    "Prof. original mm": 20,
+                    "Prof. actual mm": 12,
+                    "Placa actual": "LG777",
+                    "Posición": "D1",
+                }
+            ],
+        )
+
+        import_tire_master_rows(payload, self.db, ADMIN)
+        import_tire_master_rows(payload, self.db, ADMIN)
+
+        tire = self.db.query(Tire).filter(Tire.serial_number == "LL-RETRY-001").one()
+        events = (
+            self.db.query(TireEvent)
+            .filter(TireEvent.tire_id == tire.id, TireEvent.event_type == "master_import")
+            .all()
+        )
+        self.assertEqual(len(events), 1)
+
     def test_tire_life_360_groups_identity_events_costs_risks_and_evidence(self):
         inspection = TireInspectionCreate(
             tire_id=self.tire.id,

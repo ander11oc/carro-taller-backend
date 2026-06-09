@@ -743,27 +743,39 @@ def import_tire_master_rows(
             )
             created_positions += 1
 
-        db.add(
-            TireEvent(
-                tenant_id=user["tenant_id"],
-                tire_id=tire.id,
-                vehicle_id=vehicle.id,
-                event_type="master_import",
-                event_date=tire.purchase_date or date.today(),
-                position=position_code,
-                mileage=_row_float(row, "km desde montaje", "km desde", "km_desde_montaje"),
-                min_tread_mm=remaining_tread,
-                tread_outer_mm=remaining_tread,
-                tread_center_mm=remaining_tread,
-                tread_inner_mm=remaining_tread,
-                cost=tire.initial_cost,
-                novelty=f"Importado desde {payload.source_sheet} fila {index}. Batch {batch_id}.",
-                guidance="Registro inicial creado desde maestro de llantas.",
-                created_by=user["email"],
-                created_role=user.get("role", "viewer"),
+        event_novelty = f"Importado desde {payload.source_sheet} fila {index}. Batch {batch_id}."
+        existing_event = (
+            db.query(TireEvent)
+            .filter(
+                _scope(TireEvent, user),
+                TireEvent.tire_id == tire.id,
+                TireEvent.event_type == "master_import",
+                TireEvent.novelty == event_novelty,
             )
+            .first()
         )
-        created_events += 1
+        if not existing_event:
+            db.add(
+                TireEvent(
+                    tenant_id=user["tenant_id"],
+                    tire_id=tire.id,
+                    vehicle_id=vehicle.id,
+                    event_type="master_import",
+                    event_date=tire.purchase_date or date.today(),
+                    position=position_code,
+                    mileage=_row_float(row, "km desde montaje", "km desde", "km_desde_montaje"),
+                    min_tread_mm=remaining_tread,
+                    tread_outer_mm=remaining_tread,
+                    tread_center_mm=remaining_tread,
+                    tread_inner_mm=remaining_tread,
+                    cost=tire.initial_cost,
+                    novelty=event_novelty,
+                    guidance="Registro inicial creado desde maestro de llantas.",
+                    created_by=user["email"],
+                    created_role=user.get("role", "viewer"),
+                )
+            )
+            created_events += 1
 
     db.commit()
     _write_audit_log(db, user, "tires", "master-import", None, f"{batch_id}: {created_tires} creadas, {updated_tires} actualizadas")
