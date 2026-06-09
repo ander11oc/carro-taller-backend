@@ -40,6 +40,23 @@ class TireBase(BaseModel):
     remaining_tread_mm: float = 0
     brand: str = ""
     vehicle_id: int
+    dot: str = ""
+    design: str = ""
+    dimension: str = ""
+    life_cycle: str = "new"
+    retread_band: str = ""
+    status: str = "mounted"
+    location: str = ""
+    site: str = ""
+    provider: str = ""
+    target_pressure_psi: Optional[float] = None
+    original_tread_mm: Optional[float] = None
+    min_tread_mm: Optional[float] = None
+    initial_cost: Optional[float] = None
+    purchase_date: Optional[date] = None
+    source_sheet: str = ""
+    source_row: Optional[int] = None
+    import_batch_id: str = ""
 
 
 class TireCreate(TireBase):
@@ -52,6 +69,23 @@ class TireUpdate(BaseModel):
     remaining_tread_mm: Optional[float] = None
     brand: Optional[str] = None
     vehicle_id: Optional[int] = None
+    dot: Optional[str] = None
+    design: Optional[str] = None
+    dimension: Optional[str] = None
+    life_cycle: Optional[str] = None
+    retread_band: Optional[str] = None
+    status: Optional[str] = None
+    location: Optional[str] = None
+    site: Optional[str] = None
+    provider: Optional[str] = None
+    target_pressure_psi: Optional[float] = None
+    original_tread_mm: Optional[float] = None
+    min_tread_mm: Optional[float] = None
+    initial_cost: Optional[float] = None
+    purchase_date: Optional[date] = None
+    source_sheet: Optional[str] = None
+    source_row: Optional[int] = None
+    import_batch_id: Optional[str] = None
 
 
 class TireOut(TireBase):
@@ -59,6 +93,193 @@ class TireOut(TireBase):
 
     class Config:
         from_attributes = True
+
+
+class TireCatalogEntryCreate(BaseModel):
+    catalog_type: str
+    value: str
+    description: str = ""
+
+
+class TireCatalogEntryOut(TireCatalogEntryCreate):
+    id: int
+    normalized_value: str
+    is_active: bool = True
+
+    class Config:
+        from_attributes = True
+
+
+class VehicleTirePositionCreate(BaseModel):
+    vehicle_id: int
+    position_code: str
+    axle: str = ""
+    side: str = ""
+    tire_id: Optional[int] = None
+    target_pressure_psi: Optional[float] = None
+    min_tread_mm: Optional[float] = None
+
+
+class VehicleTirePositionOut(VehicleTirePositionCreate):
+    id: int
+    tire_serial: str = ""
+    tire_brand: str = ""
+    remaining_tread_mm: Optional[float] = None
+    status: str = "missing"
+
+    class Config:
+        from_attributes = True
+
+
+class VehicleTireMapOut(BaseModel):
+    vehicle_id: int
+    plate: str
+    has_missing_positions: bool
+    positions: list[VehicleTirePositionOut]
+
+
+class TireInspectionCreate(BaseModel):
+    tire_id: int
+    vehicle_id: int
+    position: str
+    event_date: date = Field(default_factory=date.today)
+    mileage: Optional[float] = None
+    pressure_psi: Optional[float] = None
+    tread_outer_mm: float
+    tread_center_mm: float
+    tread_inner_mm: float
+    damage: str = ""
+    novelty: str = ""
+    evidence_url: str = ""
+    justification: str = ""
+
+
+class TireMovementCreate(BaseModel):
+    tire_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    event_type: str = "movement"
+    event_date: date = Field(default_factory=date.today)
+    position: str = ""
+    mileage: Optional[float] = None
+    origin: str = ""
+    destination: str = ""
+    provider: str = ""
+    cost: Optional[float] = None
+    novelty: str = ""
+    evidence_url: str = ""
+    justification: str = ""
+
+
+class TireEventOut(BaseModel):
+    id: int
+    tire_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    event_type: str
+    event_date: date
+    position: str = ""
+    mileage: Optional[float] = None
+    pressure_psi: Optional[float] = None
+    tread_outer_mm: Optional[float] = None
+    tread_center_mm: Optional[float] = None
+    tread_inner_mm: Optional[float] = None
+    min_tread_mm: Optional[float] = None
+    damage: str = ""
+    novelty: str = ""
+    origin: str = ""
+    destination: str = ""
+    provider: str = ""
+    cost: Optional[float] = None
+    evidence_url: str = ""
+    justification: str = ""
+    guidance: str = ""
+    created_by: str = ""
+    created_role: str = ""
+    requires_approval: bool = False
+    approved_by: str = ""
+
+    class Config:
+        from_attributes = True
+
+
+class TireRecommendationOut(BaseModel):
+    action: str
+    severity: str
+    title: str
+    reason: str
+    tire_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    position: str = ""
+
+
+class TireCostSummaryOut(BaseModel):
+    total_cost: float
+    total_km: float
+    cost_per_km: Optional[float] = None
+    by_tire: list[dict[str, str | int | float | None]]
+    by_vehicle: list[dict[str, str | int | float | None]]
+    by_provider: list[dict[str, str | int | float | None]]
+    by_brand: list[dict[str, str | int | float | None]]
+    by_design: list[dict[str, str | int | float | None]]
+    by_life: list[dict[str, str | int | float | None]]
+
+
+class TireOperationalReportsOut(BaseModel):
+    sections: dict[str, list[dict[str, str | int | float | bool | None]]]
+
+
+class TireDecisionMotorOut(BaseModel):
+    recommendations: list[TireRecommendationOut]
+    rankings: dict[str, list[dict[str, str | int | float | None]]]
+
+
+class TireMasterPreviewRequest(BaseModel):
+    rows: list[dict[str, str | int | float | None]]
+
+
+class TireMasterPreviewOut(BaseModel):
+    total_rows: int
+    valid_count: int
+    incomplete_count: int
+    duplicate_serials: list[str]
+    missing_catalogs: dict[str, list[str]]
+    guidance: str
+
+
+class TireMasterImportRequest(TireMasterPreviewRequest):
+    source_sheet: str = "03_Llantas"
+    import_batch_id: str = ""
+    source_row_start: int = 2
+    create_missing_catalogs: bool = True
+    create_missing_vehicles: bool = True
+    update_existing: bool = True
+
+
+class TireMasterImportOut(BaseModel):
+    total_rows: int
+    created_tires: int
+    updated_tires: int
+    created_vehicles: int
+    created_positions: int
+    created_events: int
+    skipped_rows: int
+    duplicate_serials: list[str]
+    errors: list[str]
+    import_batch_id: str
+    guidance: str
+
+
+class TireLife360Out(BaseModel):
+    tire_id: int
+    identification: dict[str, str | int | float | None]
+    current_state: dict[str, str | int | float | bool | None]
+    mounting_history: list[dict[str, str | int | float | bool | None]]
+    inspections: list[dict[str, str | int | float | bool | None]]
+    maintenance: list[dict[str, str | int | float | bool | None]]
+    retread: list[dict[str, str | int | float | bool | None]]
+    warranties: list[dict[str, str | int | float | bool | None]]
+    costs: dict[str, str | int | float | None]
+    risks: list[dict[str, str | int | float | bool | None]]
+    evidence: list[dict[str, str | int | float | bool | None]]
 
 
 class RetiredTireRecordOut(BaseModel):

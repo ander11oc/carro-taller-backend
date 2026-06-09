@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.base import Base
-from app.models.entities import Document, InventoryItem, MaintenanceOrder, Tire, Vehicle
+from app.models.entities import Document, InventoryItem, MaintenanceOrder, Tire, TireEvent, Vehicle, VehicleTirePosition
 from app.services.fleet_alerts import get_fleet_alerts
 
 
@@ -71,6 +71,70 @@ class FleetAlertsTest(unittest.TestCase):
             get_fleet_alerts(db, tenant)[0]["id"],
             alerts[0]["id"],
         )
+
+        db.close()
+        engine.dispose()
+
+    def test_get_fleet_alerts_includes_missing_positions_and_low_pressure(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        tenant = "tenant_test"
+        vehicle = Vehicle(
+            tenant_id=tenant,
+            plate="CAUCA-808",
+            brand="Kenworth",
+            model="T800",
+            year=2020,
+            mileage=1000,
+        )
+        db.add(vehicle)
+        db.flush()
+        tire = Tire(
+            tenant_id=tenant,
+            serial_number="8229",
+            position="P3",
+            remaining_tread_mm=8,
+            brand="Supercargo",
+            vehicle_id=vehicle.id,
+        )
+        db.add(tire)
+        db.flush()
+        db.add_all(
+            [
+                VehicleTirePosition(
+                    tenant_id=tenant,
+                    vehicle_id=vehicle.id,
+                    position_code="P1",
+                    target_pressure_psi=95,
+                    min_tread_mm=3.5,
+                ),
+                VehicleTirePosition(
+                    tenant_id=tenant,
+                    vehicle_id=vehicle.id,
+                    position_code="P3",
+                    tire_id=tire.id,
+                    target_pressure_psi=95,
+                    min_tread_mm=3.5,
+                ),
+                TireEvent(
+                    tenant_id=tenant,
+                    tire_id=tire.id,
+                    vehicle_id=vehicle.id,
+                    event_type="inspection",
+                    position="P3",
+                    pressure_psi=80,
+                    min_tread_mm=8,
+                ),
+            ]
+        )
+        db.commit()
+
+        alerts = get_fleet_alerts(db, tenant)
+        kinds = {alert["kind"] for alert in alerts}
+
+        self.assertIn("vehicle_position_missing", kinds)
+        self.assertIn("tire_pressure_low", kinds)
 
         db.close()
         engine.dispose()

@@ -1,5 +1,6 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import String, func
@@ -10,6 +11,9 @@ from app.db.session import get_db
 from app.models.entities import (
     Vehicle,
     Tire,
+    TireCatalogEntry,
+    TireEvent,
+    VehicleTirePosition,
     RetiredTireRecord,
     TireRetirementCondition,
     TireBrandDesign,
@@ -28,6 +32,23 @@ from app.schemas.fleet import (
     TireCreate,
     TireUpdate,
     TireOut,
+    TireCatalogEntryCreate,
+    TireCatalogEntryOut,
+    TireInspectionCreate,
+    TireMovementCreate,
+    TireEventOut,
+    TireCostSummaryOut,
+    TireDecisionMotorOut,
+    TireLife360Out,
+    TireMasterImportRequest,
+    TireMasterImportOut,
+    TireMasterPreviewRequest,
+    TireMasterPreviewOut,
+    TireOperationalReportsOut,
+    TireRecommendationOut,
+    VehicleTirePositionCreate,
+    VehicleTirePositionOut,
+    VehicleTireMapOut,
     RetiredTireRecordOut,
     TireRetirementConditionOut,
     TireBrandDesignOut,
@@ -114,6 +135,244 @@ def _csv_values(value: Optional[str]) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _normalize_catalog_value(value: str) -> str:
+    return " ".join(value.strip().upper().replace("-", " ").split())
+
+
+def _normalize_header(value: str) -> str:
+    replacements = str.maketrans("áéíóúÁÉÍÓÚñÑ", "aeiouAEIOUnN")
+    return "".join(
+        char.lower()
+        for char in value.translate(replacements)
+        if char.isalnum()
+    )
+
+
+def _row_text(row: dict, *names: str) -> str:
+    normalized_row = {_normalize_header(str(key)): value for key, value in row.items()}
+    for name in names:
+        value = row.get(name)
+        if value is None:
+            value = normalized_row.get(_normalize_header(name))
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _row_float(row: dict, *names: str) -> float | None:
+    value = _row_text(row, *names)
+    if not value:
+        return None
+    clean = value.replace("$", "").replace(" ", "")
+    if "," in clean and "." in clean:
+        clean = clean.replace(".", "").replace(",", ".")
+    elif "," in clean:
+        clean = clean.replace(",", ".")
+    elif clean.count(".") > 1:
+        clean = clean.replace(".", "")
+    try:
+        return float(clean)
+    except ValueError:
+        return None
+
+
+def _row_money(row: dict, *names: str) -> float | None:
+    value = _row_text(row, *names)
+    if not value:
+        return None
+    clean = value.replace("$", "").replace(" ", "")
+    if "," in clean and "." in clean:
+        clean = clean.replace(".", "").replace(",", ".")
+    elif "." in clean and len(clean.rsplit(".", 1)[-1]) == 3:
+        clean = clean.replace(".", "")
+    elif "," in clean:
+        clean = clean.replace(",", ".")
+    try:
+        return float(clean)
+    except ValueError:
+        return None
+
+
+def _row_date(row: dict, *names: str) -> date | None:
+    value = _row_text(row, *names)
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _status_from_sheet(value: str) -> str:
+    normalized = _normalize_catalog_value(value)
+    mapping = {
+        "MONTADA": "mounted",
+        "MONTADO": "mounted",
+        "BODEGA": "warehouse",
+        "ALMACEN": "warehouse",
+        "REENCAUCHE": "retread",
+        "GARANTIA": "warranty",
+        "BAJA": "disposal",
+        "FBU": "disposal",
+    }
+    return mapping.get(normalized, value.strip().lower() or "mounted")
+
+
+def _inspection_min_tread(payload: TireInspectionCreate) -> float:
+    return min(payload.tread_outer_mm, payload.tread_center_mm, payload.tread_inner_mm)
+
+
+def _latest_tire_event(db: Session, tenant_id: str, tire_id: int) -> TireEvent | None:
+    return (
+        db.query(TireEvent)
+        .filter(TireEvent.tenant_id == tenant_id, TireEvent.tire_id == tire_id)
+        .order_by(TireEvent.event_date.desc(), TireEvent.id.desc())
+        .first()
+    )
+
+
+def _position_status(tire: Tire | None, position: VehicleTirePosition) -> str:
+    if not tire:
+        return "missing"
+    minimum = position.min_tread_mm or tire.min_tread_mm or 3.5
+    if tire.remaining_tread_mm <= minimum:
+        return "critical"
+    if tire.remaining_tread_mm <= minimum + 2:
+        return "alert"
+    return "ok"
+
+
+def _inspection_guidance(tire: Tire, position: VehicleTirePosition | None, min_tread: float, pressure: float | None) -> str:
+    target_pressure = (
+        position.target_pressure_psi
+        if position and position.target_pressure_psi is not None
+        else tire.target_pressure_psi
+    )
+    min_allowed = (
+        position.min_tread_mm
+        if position and position.min_tread_mm is not None
+        else tire.min_tread_mm
+    ) or 3.5
+    if min_tread <= min_allowed:
+        return "Profundidad critica. Programar retiro o revision tecnica inmediata."
+    if pressure is not None and target_pressure is not None and pressure < target_pressure:
+        return "Presion por debajo del objetivo. Calibrar y revisar en la proxima inspeccion."
+    if pressure is not None and target_pressure is not None and pressure > target_pressure + 10:
+        return "Presion por encima del rango. Verificar calibracion y condicion de operacion."
+    return "Inspeccion registrada sin alertas criticas."
+
+
+def _event_payload(event: TireEvent) -> dict[str, str | int | float | bool | None]:
+    return {
+        "id": event.id,
+        "event_type": event.event_type,
+        "event_date": event.event_date.isoformat() if event.event_date else "",
+        "position": event.position,
+        "mileage": event.mileage,
+        "pressure_psi": event.pressure_psi,
+        "tread_outer_mm": event.tread_outer_mm,
+        "tread_center_mm": event.tread_center_mm,
+        "tread_inner_mm": event.tread_inner_mm,
+        "min_tread_mm": event.min_tread_mm,
+        "damage": event.damage,
+        "novelty": event.novelty,
+        "origin": event.origin,
+        "destination": event.destination,
+        "provider": event.provider,
+        "cost": event.cost,
+        "evidence_url": event.evidence_url,
+        "justification": event.justification,
+        "guidance": event.guidance,
+        "created_by": event.created_by,
+        "created_role": event.created_role,
+        "requires_approval": event.requires_approval,
+    }
+
+
+def _event_evidence(event: TireEvent) -> dict[str, str | int | float | bool | None] | None:
+    if not event.evidence_url:
+        return None
+    return {
+        "source": event.event_type,
+        "event_id": event.id,
+        "event_date": event.event_date.isoformat() if event.event_date else "",
+        "title": event.novelty or event.damage or event.guidance or "Evidencia de llanta",
+        "url": event.evidence_url,
+        "created_by": event.created_by,
+    }
+
+
+def _group_add(
+    groups: dict[str, dict[str, str | int | float | None]],
+    label: str,
+    cost: float,
+    km: float = 0,
+) -> None:
+    key = label or "Sin clasificar"
+    if key not in groups:
+        groups[key] = {"label": key, "cost": 0.0, "km": 0.0, "count": 0, "cost_per_km": None}
+    groups[key]["cost"] = float(groups[key]["cost"] or 0) + cost
+    groups[key]["km"] = float(groups[key]["km"] or 0) + km
+    groups[key]["count"] = int(groups[key]["count"] or 0) + 1
+    total_km = float(groups[key]["km"] or 0)
+    groups[key]["cost_per_km"] = float(groups[key]["cost"] or 0) / total_km if total_km else None
+
+
+def _group_values(groups: dict[str, dict[str, str | int | float | None]]) -> list[dict[str, str | int | float | None]]:
+    return sorted(groups.values(), key=lambda item: float(item.get("cost") or 0), reverse=True)
+
+
+def _create_tire_named_event(
+    payload: TireMovementCreate,
+    db: Session,
+    user,
+    event_type: str,
+    status_value: str,
+    approval_required: bool = True,
+) -> TireEvent:
+    data = payload.model_copy(update={"event_type": event_type})
+    event = create_tire_movement(data, db, user)
+    event.requires_approval = approval_required
+    tire = db.query(Tire).filter(_scope(Tire, user), Tire.id == payload.tire_id).first() if payload.tire_id else None
+    if tire:
+        tire.status = status_value
+        if event_type == "retread":
+            tire.life_cycle = "retread"
+            tire.retread_band = payload.novelty or tire.retread_band
+        if event_type == "disposal":
+            tire.location = payload.destination or "FBU"
+    db.commit()
+    db.refresh(event)
+    return event
+
+
+def _ensure_tire_catalog(db: Session, user, catalog_type: str, value: str) -> None:
+    if not value:
+        return
+    normalized = _normalize_catalog_value(value)
+    existing = (
+        db.query(TireCatalogEntry)
+        .filter(
+            _scope(TireCatalogEntry, user),
+            TireCatalogEntry.catalog_type == catalog_type,
+            TireCatalogEntry.normalized_value == normalized,
+        )
+        .first()
+    )
+    if existing:
+        return
+    db.add(
+        TireCatalogEntry(
+            tenant_id=user["tenant_id"],
+            catalog_type=catalog_type,
+            value=value.strip(),
+            normalized_value=normalized,
+        )
+    )
 
 
 # =====================================================
@@ -215,6 +474,908 @@ def create_tire(
     db.refresh(item)
     _write_audit_log(db, user, "tires", "create", item.id, item.serial_number)
     return item
+
+
+@router.get("/tires/catalogs", response_model=list[TireCatalogEntryOut])
+def list_tire_catalog_entries(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    catalog_type: Optional[str] = None,
+):
+    require_module_action(user, "tires", "read")
+    query = db.query(TireCatalogEntry).filter(_scope(TireCatalogEntry, user))
+    if catalog_type:
+        query = query.filter(TireCatalogEntry.catalog_type == catalog_type)
+    return query.order_by(TireCatalogEntry.catalog_type.asc(), TireCatalogEntry.value.asc()).all()
+
+
+@router.post("/tires/catalogs", response_model=TireCatalogEntryOut, status_code=201)
+def create_tire_catalog_entry(
+    payload: TireCatalogEntryCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "create")
+    normalized = _normalize_catalog_value(payload.value)
+    existing = (
+        db.query(TireCatalogEntry)
+        .filter(
+            _scope(TireCatalogEntry, user),
+            TireCatalogEntry.catalog_type == payload.catalog_type,
+            TireCatalogEntry.normalized_value == normalized,
+        )
+        .first()
+    )
+    if existing:
+        return existing
+    item = TireCatalogEntry(
+        tenant_id=user["tenant_id"],
+        catalog_type=payload.catalog_type,
+        value=payload.value.strip(),
+        normalized_value=normalized,
+        description=payload.description,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    _write_audit_log(db, user, "tires", "catalog-create", item.id, f"{payload.catalog_type}:{payload.value}")
+    return item
+
+
+@router.post("/tires/master/preview", response_model=TireMasterPreviewOut)
+def preview_tire_master_import(
+    payload: TireMasterPreviewRequest,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "import")
+    required = {
+        "serial_number": ("serial_number", "serial", "codigo", "code", "internal_number"),
+        "brand": ("brand", "marca"),
+        "design": ("design", "diseno", "diseño"),
+        "dimension": ("dimension", "medida", "dim"),
+        "original_tread": ("prof. original mm", "prof original mm", "profundidad original", "original_tread_mm"),
+        "remaining_tread": ("prof. actual mm", "prof actual mm", "profundidad actual", "remaining_tread_mm"),
+        "plate": ("placa actual", "placa", "plate", "vehicle_plate"),
+        "position": ("posicion", "posición", "position"),
+    }
+    serial_counts: dict[str, int] = {}
+    incomplete_count = 0
+    missing_catalogs: dict[str, set[str]] = {"brand": set(), "design": set(), "dimension": set(), "site": set(), "status": set()}
+    existing_catalogs: dict[str, set[str]] = {}
+    for catalog_type in missing_catalogs:
+        existing_catalogs[catalog_type] = {
+            item.normalized_value
+            for item in db.query(TireCatalogEntry)
+            .filter(
+                _scope(TireCatalogEntry, user),
+                TireCatalogEntry.catalog_type == catalog_type,
+                TireCatalogEntry.is_active.is_(True),
+            )
+            .all()
+        }
+    for row in payload.rows:
+        normalized = {key: _row_text(row, *aliases) for key, aliases in required.items()}
+        if not all(normalized.values()):
+            incomplete_count += 1
+            continue
+        serial = normalized["serial_number"]
+        serial_counts[serial] = serial_counts.get(serial, 0) + 1
+        for catalog_type, aliases in {
+            "brand": ("brand", "marca"),
+            "design": ("design", "diseno", "diseño"),
+            "dimension": ("dimension", "medida", "dim"),
+            "site": ("sede", "site"),
+            "status": ("estado", "status"),
+        }.items():
+            raw = _row_text(row, *aliases)
+            if not raw:
+                continue
+            value = _normalize_catalog_value(raw)
+            if value and value not in existing_catalogs[catalog_type]:
+                missing_catalogs[catalog_type].add(value)
+        original_tread = _row_float(row, "prof. original mm", "prof original mm", "profundidad original", "original_tread_mm")
+        remaining_tread = _row_float(row, "prof. actual mm", "prof actual mm", "profundidad actual", "remaining_tread_mm")
+        if original_tread is not None and remaining_tread is not None and remaining_tread > original_tread:
+            incomplete_count += 1
+    duplicate_serials = sorted(serial for serial, count in serial_counts.items() if count > 1)
+    valid_count = len(payload.rows) - incomplete_count
+    clean_missing = {
+        key: sorted(values)
+        for key, values in missing_catalogs.items()
+        if values
+    }
+    guidance = (
+        "Carga lista para revision: crea o confirma catalogos faltantes antes de importar."
+        if clean_missing or duplicate_serials or incomplete_count
+        else "Carga lista para importar sin alertas."
+    )
+    return TireMasterPreviewOut(
+        total_rows=len(payload.rows),
+        valid_count=valid_count,
+        incomplete_count=incomplete_count,
+        duplicate_serials=duplicate_serials,
+        missing_catalogs=clean_missing,
+        guidance=guidance,
+    )
+
+
+@router.post("/tires/master/import", response_model=TireMasterImportOut)
+def import_tire_master_rows(
+    payload: TireMasterImportRequest,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "import")
+    batch_id = payload.import_batch_id or f"llantas-{uuid4().hex[:10]}"
+    created_tires = 0
+    updated_tires = 0
+    created_vehicles = 0
+    created_positions = 0
+    created_events = 0
+    skipped_rows = 0
+    errors: list[str] = []
+    seen_serials: set[str] = set()
+    duplicate_serials: list[str] = []
+
+    source_row_start = max(1, payload.source_row_start)
+    for index, row in enumerate(payload.rows, start=source_row_start):
+        serial = _row_text(row, "serial_number", "serial", "codigo", "code", "internal_number")
+        if not serial:
+            skipped_rows += 1
+            errors.append(f"Fila {index}: serial obligatorio.")
+            continue
+        if serial in seen_serials:
+            skipped_rows += 1
+            duplicate_serials.append(serial)
+            continue
+        seen_serials.add(serial)
+
+        brand = _row_text(row, "brand", "marca")
+        design = _row_text(row, "design", "diseno", "diseño")
+        dimension = _row_text(row, "dimension", "medida", "dim")
+        plate = _row_text(row, "placa actual", "placa", "vehicle_plate")
+        position_code = _row_text(row, "posicion", "posición", "position")
+        original_tread = _row_float(row, "prof. original mm", "prof original mm", "profundidad original", "original_tread_mm")
+        remaining_tread = _row_float(row, "prof. actual mm", "prof actual mm", "profundidad actual", "remaining_tread_mm")
+        if not all([brand, design, dimension, plate, position_code]) or original_tread is None or remaining_tread is None:
+            skipped_rows += 1
+            errors.append(f"Fila {index}: faltan campos obligatorios para LLANTAS.")
+            continue
+        if remaining_tread > original_tread:
+            skipped_rows += 1
+            errors.append(f"Fila {index}: profundidad actual mayor que profundidad original.")
+            continue
+
+        if payload.create_missing_catalogs:
+            for catalog_type, value in {
+                "brand": brand,
+                "design": design,
+                "dimension": dimension,
+                "site": _row_text(row, "sede", "site"),
+                "status": _row_text(row, "estado", "status"),
+            }.items():
+                _ensure_tire_catalog(db, user, catalog_type, value)
+
+        vehicle = (
+            db.query(Vehicle)
+            .filter(_scope(Vehicle, user), Vehicle.plate == plate)
+            .first()
+        )
+        if not vehicle:
+            if not payload.create_missing_vehicles:
+                skipped_rows += 1
+                errors.append(f"Fila {index}: placa {plate} no existe.")
+                continue
+            vehicle = Vehicle(
+                tenant_id=user["tenant_id"],
+                plate=plate,
+                brand="Pendiente",
+                model="Importado maestro llantas",
+                year=date.today().year,
+                mileage=0,
+                status="active",
+                notes=f"Creado automaticamente desde {payload.source_sheet}",
+            )
+            db.add(vehicle)
+            db.flush()
+            created_vehicles += 1
+
+        tire = (
+            db.query(Tire)
+            .filter(_scope(Tire, user), Tire.serial_number == serial)
+            .first()
+        )
+        tire_data = {
+            "dot": _row_text(row, "dot", "DOT"),
+            "brand": brand,
+            "design": design,
+            "dimension": dimension,
+            "life_cycle": _row_text(row, "vida", "life_cycle") or "new",
+            "position": position_code,
+            "remaining_tread_mm": remaining_tread,
+            "vehicle_id": vehicle.id,
+            "status": _status_from_sheet(_row_text(row, "estado", "status")),
+            "location": _row_text(row, "sede", "site"),
+            "site": _row_text(row, "sede", "site"),
+            "original_tread_mm": original_tread,
+            "initial_cost": _row_money(row, "valor compra", "valor de compra", "initial_cost"),
+            "purchase_date": _row_date(row, "fecha compra", "purchase_date"),
+            "source_sheet": payload.source_sheet,
+            "source_row": index,
+            "import_batch_id": batch_id,
+        }
+        if tire:
+            if not payload.update_existing:
+                skipped_rows += 1
+                errors.append(f"Fila {index}: serial {serial} ya existe.")
+                continue
+            for key, value in tire_data.items():
+                setattr(tire, key, value)
+            updated_tires += 1
+        else:
+            tire = Tire(tenant_id=user["tenant_id"], serial_number=serial, **tire_data)
+            db.add(tire)
+            db.flush()
+            created_tires += 1
+
+        position = (
+            db.query(VehicleTirePosition)
+            .filter(
+                _scope(VehicleTirePosition, user),
+                VehicleTirePosition.vehicle_id == vehicle.id,
+                VehicleTirePosition.position_code == position_code,
+            )
+            .first()
+        )
+        if position:
+            position.tire_id = tire.id
+            position.min_tread_mm = position.min_tread_mm or tire.min_tread_mm
+        else:
+            db.add(
+                VehicleTirePosition(
+                    tenant_id=user["tenant_id"],
+                    vehicle_id=vehicle.id,
+                    position_code=position_code,
+                    tire_id=tire.id,
+                    min_tread_mm=tire.min_tread_mm,
+                )
+            )
+            created_positions += 1
+
+        db.add(
+            TireEvent(
+                tenant_id=user["tenant_id"],
+                tire_id=tire.id,
+                vehicle_id=vehicle.id,
+                event_type="master_import",
+                event_date=tire.purchase_date or date.today(),
+                position=position_code,
+                mileage=_row_float(row, "km desde montaje", "km desde", "km_desde_montaje"),
+                min_tread_mm=remaining_tread,
+                tread_outer_mm=remaining_tread,
+                tread_center_mm=remaining_tread,
+                tread_inner_mm=remaining_tread,
+                cost=tire.initial_cost,
+                novelty=f"Importado desde {payload.source_sheet} fila {index}. Batch {batch_id}.",
+                guidance="Registro inicial creado desde maestro de llantas.",
+                created_by=user["email"],
+                created_role=user.get("role", "viewer"),
+            )
+        )
+        created_events += 1
+
+    db.commit()
+    _write_audit_log(db, user, "tires", "master-import", None, f"{batch_id}: {created_tires} creadas, {updated_tires} actualizadas")
+    return TireMasterImportOut(
+        total_rows=len(payload.rows),
+        created_tires=created_tires,
+        updated_tires=updated_tires,
+        created_vehicles=created_vehicles,
+        created_positions=created_positions,
+        created_events=created_events,
+        skipped_rows=skipped_rows,
+        duplicate_serials=sorted(set(duplicate_serials)),
+        errors=errors,
+        import_batch_id=batch_id,
+        guidance="Importacion aplicada. Revisa reportes, costos y hoja de vida 360 para validar resultados.",
+    )
+
+
+@router.post("/tires/positions", response_model=VehicleTirePositionOut, status_code=201)
+def configure_vehicle_tire_position(
+    payload: VehicleTirePositionCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "create")
+    _get_or_404(db, Vehicle, payload.vehicle_id, user)
+    tire = None
+    if payload.tire_id is not None:
+        tire = _get_or_404(db, Tire, payload.tire_id, user)
+    existing = (
+        db.query(VehicleTirePosition)
+        .filter(
+            _scope(VehicleTirePosition, user),
+            VehicleTirePosition.vehicle_id == payload.vehicle_id,
+            VehicleTirePosition.position_code == payload.position_code,
+        )
+        .first()
+    )
+    if existing:
+        _apply_update(existing, payload)
+        item = existing
+    else:
+        item = VehicleTirePosition(tenant_id=user["tenant_id"], **payload.model_dump())
+        db.add(item)
+    if tire:
+        tire.vehicle_id = payload.vehicle_id
+        tire.position = payload.position_code
+    db.commit()
+    db.refresh(item)
+    return VehicleTirePositionOut(
+        id=item.id,
+        vehicle_id=item.vehicle_id,
+        position_code=item.position_code,
+        axle=item.axle,
+        side=item.side,
+        tire_id=item.tire_id,
+        target_pressure_psi=item.target_pressure_psi,
+        min_tread_mm=item.min_tread_mm,
+        tire_serial=tire.serial_number if tire else "",
+        tire_brand=tire.brand if tire else "",
+        remaining_tread_mm=tire.remaining_tread_mm if tire else None,
+        status=_position_status(tire, item),
+    )
+
+
+@router.get("/tires/vehicle-map", response_model=VehicleTireMapOut)
+def get_vehicle_tire_map(
+    vehicle_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "read")
+    vehicle = _get_or_404(db, Vehicle, vehicle_id, user)
+    positions = (
+        db.query(VehicleTirePosition)
+        .filter(_scope(VehicleTirePosition, user), VehicleTirePosition.vehicle_id == vehicle_id)
+        .order_by(VehicleTirePosition.position_code.asc())
+        .all()
+    )
+    tire_ids = [position.tire_id for position in positions if position.tire_id]
+    tires_by_id = {
+        tire.id: tire
+        for tire in db.query(Tire).filter(_scope(Tire, user), Tire.id.in_(tire_ids)).all()
+    } if tire_ids else {}
+    tires_by_position = {
+        tire.position: tire
+        for tire in db.query(Tire)
+        .filter(_scope(Tire, user), Tire.vehicle_id == vehicle_id)
+        .all()
+    }
+    output = []
+    for position in positions:
+        tire = tires_by_id.get(position.tire_id) or tires_by_position.get(position.position_code)
+        output.append(
+            VehicleTirePositionOut(
+                id=position.id,
+                vehicle_id=position.vehicle_id,
+                position_code=position.position_code,
+                axle=position.axle,
+                side=position.side,
+                tire_id=position.tire_id,
+                target_pressure_psi=position.target_pressure_psi,
+                min_tread_mm=position.min_tread_mm,
+                tire_serial=tire.serial_number if tire else "",
+                tire_brand=tire.brand if tire else "",
+                remaining_tread_mm=tire.remaining_tread_mm if tire else None,
+                status=_position_status(tire, position),
+            )
+        )
+    return VehicleTireMapOut(
+        vehicle_id=vehicle.id,
+        plate=vehicle.plate,
+        has_missing_positions=any(item.status == "missing" for item in output),
+        positions=output,
+    )
+
+
+@router.post("/tires/events/inspection", response_model=TireEventOut, status_code=201)
+def create_tire_inspection(
+    payload: TireInspectionCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "create")
+    tire = _get_or_404(db, Tire, payload.tire_id, user)
+    _get_or_404(db, Vehicle, payload.vehicle_id, user)
+    min_tread = _inspection_min_tread(payload)
+    previous = _latest_tire_event(db, user["tenant_id"], payload.tire_id)
+    if previous and previous.min_tread_mm is not None and min_tread > previous.min_tread_mm + 0.1 and not payload.justification:
+        raise HTTPException(
+            status_code=400,
+            detail="La profundidad no puede subir frente a la inspeccion anterior sin justificacion.",
+        )
+    if previous and previous.mileage is not None and payload.mileage is not None and payload.mileage < previous.mileage and not payload.justification:
+        raise HTTPException(
+            status_code=400,
+            detail="El kilometraje no puede bajar frente al evento anterior sin justificacion.",
+        )
+    position = (
+        db.query(VehicleTirePosition)
+        .filter(
+            _scope(VehicleTirePosition, user),
+            VehicleTirePosition.vehicle_id == payload.vehicle_id,
+            VehicleTirePosition.position_code == payload.position,
+        )
+        .first()
+    )
+    guidance = _inspection_guidance(tire, position, min_tread, payload.pressure_psi)
+    event = TireEvent(
+        tenant_id=user["tenant_id"],
+        tire_id=payload.tire_id,
+        vehicle_id=payload.vehicle_id,
+        event_type="inspection",
+        event_date=payload.event_date,
+        position=payload.position,
+        mileage=payload.mileage,
+        pressure_psi=payload.pressure_psi,
+        tread_outer_mm=payload.tread_outer_mm,
+        tread_center_mm=payload.tread_center_mm,
+        tread_inner_mm=payload.tread_inner_mm,
+        min_tread_mm=min_tread,
+        damage=payload.damage,
+        novelty=payload.novelty,
+        evidence_url=payload.evidence_url,
+        justification=payload.justification,
+        guidance=guidance,
+        created_by=user["email"],
+        created_role=user.get("role", "viewer"),
+    )
+    tire.remaining_tread_mm = min_tread
+    tire.vehicle_id = payload.vehicle_id
+    tire.position = payload.position
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    _write_audit_log(db, user, "tires", "inspection", event.id, f"{tire.serial_number}:{guidance}")
+    return event
+
+
+@router.post("/tires/events/movement", response_model=TireEventOut, status_code=201)
+def create_tire_movement(
+    payload: TireMovementCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "create")
+    tire = _get_or_404(db, Tire, payload.tire_id, user) if payload.tire_id is not None else None
+    if payload.vehicle_id is not None:
+        _get_or_404(db, Vehicle, payload.vehicle_id, user)
+    event = TireEvent(
+        tenant_id=user["tenant_id"],
+        tire_id=payload.tire_id,
+        vehicle_id=payload.vehicle_id,
+        event_type=payload.event_type,
+        event_date=payload.event_date,
+        position=payload.position,
+        mileage=payload.mileage,
+        origin=payload.origin,
+        destination=payload.destination,
+        provider=payload.provider,
+        cost=payload.cost,
+        novelty=payload.novelty,
+        evidence_url=payload.evidence_url,
+        justification=payload.justification,
+        guidance=f"Movimiento registrado hacia {payload.destination or 'destino no especificado'}.",
+        created_by=user["email"],
+        created_role=user.get("role", "viewer"),
+    )
+    if tire:
+        if payload.vehicle_id is not None:
+            tire.vehicle_id = payload.vehicle_id
+        if payload.position:
+            tire.position = payload.position
+        if payload.destination:
+            tire.location = payload.destination
+            tire.status = payload.event_type
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    _write_audit_log(db, user, "tires", payload.event_type, event.id, payload.destination)
+    return event
+
+
+@router.post("/tires/events/mount", response_model=TireEventOut, status_code=201)
+def create_tire_mount_event(
+    payload: TireMovementCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return _create_tire_named_event(payload, db, user, "mount", "mounted", False)
+
+
+@router.post("/tires/events/dismount", response_model=TireEventOut, status_code=201)
+def create_tire_dismount_event(
+    payload: TireMovementCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return _create_tire_named_event(payload, db, user, "dismount", "warehouse", False)
+
+
+@router.post("/tires/events/rotation", response_model=TireEventOut, status_code=201)
+def create_tire_rotation_event(
+    payload: TireMovementCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return _create_tire_named_event(payload, db, user, "rotation", "mounted", False)
+
+
+@router.post("/tires/events/retread", response_model=TireEventOut, status_code=201)
+def create_tire_retread_event(
+    payload: TireMovementCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return _create_tire_named_event(payload, db, user, "retread", "retread")
+
+
+@router.post("/tires/events/warranty", response_model=TireEventOut, status_code=201)
+def create_tire_warranty_event(
+    payload: TireMovementCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return _create_tire_named_event(payload, db, user, "warranty", "warranty")
+
+
+@router.post("/tires/events/disposal", response_model=TireEventOut, status_code=201)
+def create_tire_disposal_event(
+    payload: TireMovementCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return _create_tire_named_event(payload, db, user, "disposal", "disposal")
+
+
+@router.post("/tires/events/{event_id}/approve", response_model=TireEventOut)
+def approve_tire_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "update")
+    event = _get_or_404(db, TireEvent, event_id, user)
+    event.requires_approval = False
+    event.approved_by = user["email"]
+    db.commit()
+    db.refresh(event)
+    _write_audit_log(db, user, "tires", "approve-event", event.id, event.event_type)
+    return event
+
+
+@router.get("/tires/events", response_model=list[TireEventOut])
+def list_tire_events(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    tire_id: Optional[int] = None,
+    vehicle_id: Optional[int] = None,
+):
+    require_module_action(user, "tires", "read")
+    query = db.query(TireEvent).filter(_scope(TireEvent, user))
+    if tire_id is not None:
+        query = query.filter(TireEvent.tire_id == tire_id)
+    if vehicle_id is not None:
+        query = query.filter(TireEvent.vehicle_id == vehicle_id)
+    return query.order_by(TireEvent.event_date.desc(), TireEvent.id.desc()).all()
+
+
+@router.get("/tires/recommendations", response_model=list[TireRecommendationOut])
+def get_tire_recommendations(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    vehicle_id: Optional[int] = None,
+    tire_id: Optional[int] = None,
+):
+    require_module_action(user, "tires", "read")
+    recommendations: list[TireRecommendationOut] = []
+    tire_query = db.query(Tire).filter(_scope(Tire, user))
+    if vehicle_id is not None:
+        tire_query = tire_query.filter(Tire.vehicle_id == vehicle_id)
+    if tire_id is not None:
+        tire_query = tire_query.filter(Tire.id == tire_id)
+    tires = tire_query.all()
+    for tire in tires:
+        latest = _latest_tire_event(db, user["tenant_id"], tire.id)
+        threshold = tire.min_tread_mm or 3.5
+        if tire.remaining_tread_mm <= threshold or (latest and latest.damage):
+            recommendations.append(TireRecommendationOut(
+                action="retirar",
+                severity="high",
+                title="Retirar o revisar llanta",
+                reason="La profundidad esta en rango critico o existe dano reportado.",
+                tire_id=tire.id,
+                vehicle_id=tire.vehicle_id,
+                position=tire.position,
+            ))
+        position = (
+            db.query(VehicleTirePosition)
+            .filter(
+                _scope(VehicleTirePosition, user),
+                VehicleTirePosition.vehicle_id == tire.vehicle_id,
+                VehicleTirePosition.position_code == tire.position,
+            )
+            .first()
+        )
+        target = position.target_pressure_psi if position and position.target_pressure_psi is not None else tire.target_pressure_psi
+        if latest and latest.pressure_psi is not None and target is not None and latest.pressure_psi < target:
+            recommendations.append(TireRecommendationOut(
+                action="calibrar",
+                severity="medium",
+                title="Calibrar presion",
+                reason="La presion registrada esta por debajo del objetivo configurado.",
+                tire_id=tire.id,
+                vehicle_id=tire.vehicle_id,
+                position=tire.position,
+            ))
+    if vehicle_id is not None:
+        vehicle_map = get_vehicle_tire_map(vehicle_id, db, user)
+        if vehicle_map.has_missing_positions:
+            recommendations.append(TireRecommendationOut(
+                action="completar_mapa",
+                severity="medium",
+                title="Completar posiciones del vehiculo",
+                reason="Hay posiciones configuradas sin llanta montada.",
+                vehicle_id=vehicle_id,
+            ))
+    return recommendations
+
+
+@router.get("/tires/costs", response_model=TireCostSummaryOut)
+def get_tire_cost_summary(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "read")
+    tires = db.query(Tire).filter(_scope(Tire, user)).all()
+    events = db.query(TireEvent).filter(_scope(TireEvent, user)).all()
+    by_tire: dict[str, dict[str, str | int | float | None]] = {}
+    by_vehicle: dict[str, dict[str, str | int | float | None]] = {}
+    by_provider: dict[str, dict[str, str | int | float | None]] = {}
+    by_brand: dict[str, dict[str, str | int | float | None]] = {}
+    by_design: dict[str, dict[str, str | int | float | None]] = {}
+    by_life: dict[str, dict[str, str | int | float | None]] = {}
+    tire_by_id = {tire.id: tire for tire in tires}
+    total_cost = 0.0
+    total_km = 0.0
+    for tire in tires:
+        cost = tire.initial_cost or 0
+        total_cost += cost
+        _group_add(by_tire, tire.serial_number, cost)
+        _group_add(by_vehicle, str(tire.vehicle_id), cost)
+        _group_add(by_provider, tire.provider, cost)
+        _group_add(by_brand, tire.brand, cost)
+        _group_add(by_design, tire.design, cost)
+        _group_add(by_life, tire.life_cycle, cost)
+    for event in events:
+        cost = event.cost or 0
+        if not cost:
+            continue
+        tire = tire_by_id.get(event.tire_id or 0)
+        km = event.mileage or 0
+        total_cost += cost
+        total_km = max(total_km, km)
+        _group_add(by_tire, tire.serial_number if tire else f"Evento {event.id}", cost, km)
+        _group_add(by_vehicle, str(event.vehicle_id or ""), cost, km)
+        _group_add(by_provider, event.provider or (tire.provider if tire else ""), cost, km)
+        _group_add(by_brand, tire.brand if tire else "", cost, km)
+        _group_add(by_design, tire.design if tire else "", cost, km)
+        _group_add(by_life, tire.life_cycle if tire else "", cost, km)
+    latest_mileage = max((event.mileage or 0 for event in events), default=0)
+    total_km = max(total_km, latest_mileage)
+    return TireCostSummaryOut(
+        total_cost=total_cost,
+        total_km=total_km,
+        cost_per_km=total_cost / total_km if total_cost and total_km else None,
+        by_tire=_group_values(by_tire),
+        by_vehicle=_group_values(by_vehicle),
+        by_provider=_group_values(by_provider),
+        by_brand=_group_values(by_brand),
+        by_design=_group_values(by_design),
+        by_life=_group_values(by_life),
+    )
+
+
+@router.get("/tires/reports", response_model=TireOperationalReportsOut)
+def get_tire_operational_reports(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "read")
+    events = (
+        db.query(TireEvent)
+        .filter(_scope(TireEvent, user))
+        .order_by(TireEvent.event_date.desc(), TireEvent.id.desc())
+        .all()
+    )
+    sections = {
+        "inspections": [_event_payload(event) for event in events if event.event_type == "inspection"],
+        "movements": [_event_payload(event) for event in events if event.event_type in {"mount", "dismount", "rotation", "movement"}],
+        "retread": [_event_payload(event) for event in events if event.event_type == "retread"],
+        "warranties": [_event_payload(event) for event in events if event.event_type == "warranty"],
+        "disposals": [_event_payload(event) for event in events if event.event_type == "disposal"],
+        "evidence": [item for item in (_event_evidence(event) for event in events) if item is not None],
+    }
+    return TireOperationalReportsOut(sections=sections)
+
+
+@router.get("/tires/decision-motor", response_model=TireDecisionMotorOut)
+def get_tire_decision_motor(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    vehicle_id: Optional[int] = None,
+):
+    require_module_action(user, "tires", "read")
+    recommendations = get_tire_recommendations(db, user, vehicle_id=vehicle_id)
+    query = db.query(Tire).filter(_scope(Tire, user))
+    if vehicle_id is not None:
+        query = query.filter(Tire.vehicle_id == vehicle_id)
+    tires = query.all()
+    brand_rank: dict[str, dict[str, str | int | float | None]] = {}
+    design_rank: dict[str, dict[str, str | int | float | None]] = {}
+    provider_rank: dict[str, dict[str, str | int | float | None]] = {}
+    for tire in tires:
+        latest = _latest_tire_event(db, user["tenant_id"], tire.id)
+        min_allowed = tire.min_tread_mm or 3.5
+        _group_add(brand_rank, tire.brand, tire.initial_cost or 0, latest.mileage if latest and latest.mileage else 0)
+        _group_add(design_rank, tire.design, tire.initial_cost or 0, latest.mileage if latest and latest.mileage else 0)
+        _group_add(provider_rank, tire.provider, tire.initial_cost or 0, latest.mileage if latest and latest.mileage else 0)
+        if tire.life_cycle != "retread" and tire.remaining_tread_mm <= min_allowed + 2 and tire.status != "disposal":
+            recommendations.append(TireRecommendationOut(
+                action="reencauchar",
+                severity="medium",
+                title="Evaluar reencauche",
+                reason="La carcasa esta entrando a zona de retiro; validar daño, vida y proveedor antes de baja.",
+                tire_id=tire.id,
+                vehicle_id=tire.vehicle_id,
+                position=tire.position,
+            ))
+        if latest and latest.tread_outer_mm is not None and latest.tread_center_mm is not None and latest.tread_inner_mm is not None:
+            depths = [latest.tread_outer_mm, latest.tread_center_mm, latest.tread_inner_mm]
+            spread = max(depths) - min(depths)
+            if spread >= 2.5:
+                recommendations.append(TireRecommendationOut(
+                    action="rotar",
+                    severity="medium",
+                    title="Rotar por desgaste desigual",
+                    reason="Las tres mediciones muestran diferencia alta entre hombros y centro.",
+                    tire_id=tire.id,
+                    vehicle_id=tire.vehicle_id,
+                    position=tire.position,
+                ))
+                recommendations.append(TireRecommendationOut(
+                    action="desgaste_anormal",
+                    severity="high",
+                    title="Revisar desgaste anormal",
+                    reason="El patrón sugiere problema mecánico, presión o alineación.",
+                    tire_id=tire.id,
+                    vehicle_id=tire.vehicle_id,
+                    position=tire.position,
+                ))
+        if latest and latest.min_tread_mm is not None:
+            recommendations.append(TireRecommendationOut(
+                action="prediccion_vida_util",
+                severity="low",
+                title="Estimar vida util",
+                reason=f"Profundidad actual {latest.min_tread_mm} mm; usar tendencia de inspecciones para compra y retiro.",
+                tire_id=tire.id,
+                vehicle_id=tire.vehicle_id,
+                position=tire.position,
+            ))
+        if latest and ((latest.damage and latest.damage.strip()) or (latest.pressure_psi is not None and tire.target_pressure_psi is not None and latest.pressure_psi < tire.target_pressure_psi)):
+            recommendations.append(TireRecommendationOut(
+                action="prediccion_falla",
+                severity="high",
+                title="Riesgo de falla",
+                reason="Daño o presión fuera de objetivo elevan el riesgo operativo.",
+                tire_id=tire.id,
+                vehicle_id=tire.vehicle_id,
+                position=tire.position,
+            ))
+    return TireDecisionMotorOut(
+        recommendations=recommendations,
+        rankings={
+            "brands": _group_values(brand_rank),
+            "designs": _group_values(design_rank),
+            "providers": _group_values(provider_rank),
+        },
+    )
+
+
+@router.get("/tires/{item_id}/life-360", response_model=TireLife360Out)
+def get_tire_life_360(
+    item_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "read")
+    tire = _get_or_404(db, Tire, item_id, user)
+    vehicle = db.query(Vehicle).filter(_scope(Vehicle, user), Vehicle.id == tire.vehicle_id).first()
+    position = (
+        db.query(VehicleTirePosition)
+        .filter(
+            _scope(VehicleTirePosition, user),
+            VehicleTirePosition.vehicle_id == tire.vehicle_id,
+            VehicleTirePosition.position_code == tire.position,
+        )
+        .first()
+    )
+    events = (
+        db.query(TireEvent)
+        .filter(_scope(TireEvent, user), TireEvent.tire_id == tire.id)
+        .order_by(TireEvent.event_date.desc(), TireEvent.id.desc())
+        .all()
+    )
+    inspections = [_event_payload(event) for event in events if event.event_type == "inspection"]
+    mounting_types = {"mount", "mounting", "montaje", "dismount", "desmontaje", "rotation", "rotacion", "movement"}
+    maintenance_types = {"maintenance", "mantenimiento", "calibration", "calibracion", "repair", "reparacion", "rotation", "rotacion"}
+    retread_types = {"retread", "reencauche", "renovacion", "renewal"}
+    warranty_types = {"warranty", "garantia"}
+    mounting_history = [_event_payload(event) for event in events if event.event_type in mounting_types]
+    maintenance = [_event_payload(event) for event in events if event.event_type in maintenance_types]
+    retread = [_event_payload(event) for event in events if event.event_type in retread_types]
+    warranties = [_event_payload(event) for event in events if event.event_type in warranty_types]
+    accumulated_cost = sum(event.cost or 0 for event in events) + (tire.initial_cost or 0)
+    last_mileage = next((event.mileage for event in events if event.mileage is not None), None)
+    cost_per_km = accumulated_cost / last_mileage if accumulated_cost and last_mileage else None
+    risks = [
+        recommendation.model_dump()
+        for recommendation in get_tire_recommendations(db, user, tire_id=tire.id)
+    ]
+    evidence = [item for item in (_event_evidence(event) for event in events) if item is not None]
+    status = _position_status(tire, position) if position else ("critical" if tire.remaining_tread_mm <= (tire.min_tread_mm or 3.5) else "ok")
+    return TireLife360Out(
+        tire_id=tire.id,
+        identification={
+            "serial_number": tire.serial_number,
+            "dot": tire.dot,
+            "brand": tire.brand,
+            "design": tire.design,
+            "dimension": tire.dimension,
+            "life_cycle": tire.life_cycle,
+            "retread_band": tire.retread_band,
+            "qr": tire.serial_number,
+        },
+        current_state={
+            "status": tire.status,
+            "location": tire.location,
+            "site": tire.site,
+            "vehicle_id": tire.vehicle_id,
+            "vehicle_plate": vehicle.plate if vehicle else "",
+            "position": tire.position,
+            "visual_status": status,
+            "remaining_tread_mm": tire.remaining_tread_mm,
+            "target_pressure_psi": position.target_pressure_psi if position and position.target_pressure_psi is not None else tire.target_pressure_psi,
+            "min_tread_mm": position.min_tread_mm if position and position.min_tread_mm is not None else tire.min_tread_mm,
+            "is_fit": status in {"ok", "alert"},
+        },
+        mounting_history=mounting_history,
+        inspections=inspections,
+        maintenance=maintenance,
+        retread=retread,
+        warranties=warranties,
+        costs={
+            "purchase_cost": tire.initial_cost,
+            "accumulated_cost": accumulated_cost,
+            "cost_per_km": cost_per_km,
+            "last_mileage": last_mileage,
+        },
+        risks=risks,
+        evidence=evidence,
+    )
 
 
 @router.get("/tires/{item_id}", response_model=TireOut)

@@ -61,6 +61,80 @@ class Tire(Base, TimestampMixin):
     remaining_tread_mm: Mapped[float] = mapped_column(Float, default=0)
     brand: Mapped[str] = mapped_column(String(80), default="")
     vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"))
+    dot: Mapped[str] = mapped_column(String(40), default="")
+    design: Mapped[str] = mapped_column(String(120), default="")
+    dimension: Mapped[str] = mapped_column(String(80), default="")
+    life_cycle: Mapped[str] = mapped_column(String(40), default="new")
+    retread_band: Mapped[str] = mapped_column(String(120), default="")
+    status: Mapped[str] = mapped_column(String(40), default="mounted")
+    location: Mapped[str] = mapped_column(String(120), default="")
+    site: Mapped[str] = mapped_column(String(120), default="")
+    provider: Mapped[str] = mapped_column(String(120), default="")
+    target_pressure_psi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    original_tread_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_tread_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    initial_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    purchase_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    import_batch_id: Mapped[str] = mapped_column(String(80), default="")
+
+
+class TireCatalogEntry(Base, TimestampMixin):
+    __tablename__ = "tire_catalog_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    catalog_type: Mapped[str] = mapped_column(String(60), index=True)
+    value: Mapped[str] = mapped_column(String(160), index=True)
+    normalized_value: Mapped[str] = mapped_column(String(160), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class VehicleTirePosition(Base, TimestampMixin):
+    __tablename__ = "vehicle_tire_positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    vehicle_id: Mapped[int] = mapped_column(ForeignKey("vehicles.id"), index=True)
+    position_code: Mapped[str] = mapped_column(String(40), index=True)
+    axle: Mapped[str] = mapped_column(String(80), default="")
+    side: Mapped[str] = mapped_column(String(40), default="")
+    tire_id: Mapped[int | None] = mapped_column(ForeignKey("tires.id"), nullable=True)
+    target_pressure_psi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_tread_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class TireEvent(Base, TimestampMixin):
+    __tablename__ = "tire_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    tire_id: Mapped[int | None] = mapped_column(ForeignKey("tires.id"), nullable=True, index=True)
+    vehicle_id: Mapped[int | None] = mapped_column(ForeignKey("vehicles.id"), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(60), index=True)
+    event_date: Mapped[date] = mapped_column(Date, default=date.today, index=True)
+    position: Mapped[str] = mapped_column(String(40), default="")
+    mileage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pressure_psi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tread_outer_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tread_center_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tread_inner_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_tread_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    damage: Mapped[str] = mapped_column(String(160), default="")
+    novelty: Mapped[str] = mapped_column(Text, default="")
+    origin: Mapped[str] = mapped_column(String(120), default="")
+    destination: Mapped[str] = mapped_column(String(120), default="")
+    provider: Mapped[str] = mapped_column(String(120), default="")
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_url: Mapped[str] = mapped_column(String(255), default="")
+    justification: Mapped[str] = mapped_column(Text, default="")
+    guidance: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_role: Mapped[str] = mapped_column(String(50), default="")
+    requires_approval: Mapped[bool] = mapped_column(Boolean, default=False)
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
 
 
 class RetiredTireRecord(Base, TimestampMixin):
