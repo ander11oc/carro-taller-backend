@@ -266,8 +266,8 @@ class TireOperationsTest(unittest.TestCase):
             ],
         )
 
-        import_tire_master_rows(payload, self.db, ADMIN)
-        import_tire_master_rows(payload, self.db, ADMIN)
+        first = import_tire_master_rows(payload, self.db, ADMIN)
+        second = import_tire_master_rows(payload, self.db, ADMIN)
 
         tire = self.db.query(Tire).filter(Tire.serial_number == "LL-RETRY-001").one()
         events = (
@@ -275,7 +275,57 @@ class TireOperationsTest(unittest.TestCase):
             .filter(TireEvent.tire_id == tire.id, TireEvent.event_type == "master_import")
             .all()
         )
+        self.assertEqual(first.created_tires, 1)
+        self.assertEqual(second.created_tires, 0)
+        self.assertEqual(second.updated_tires, 0)
+        self.assertEqual(second.skipped_rows, 1)
         self.assertEqual(len(events), 1)
+
+    def test_master_import_matches_serials_by_canonical_code(self):
+        first = TireMasterImportRequest(
+            source_sheet="03_Llantas",
+            import_batch_id="canonical-a",
+            source_row_start=30,
+            rows=[
+                {
+                    "Serial": " ll-dup-001 ",
+                    "Marca": "Michelin",
+                    "design": "Direccional",
+                    "Medida": "295/80R22.5",
+                    "Prof. original mm": 20,
+                    "Prof. actual mm": 12,
+                    "Placa actual": "LG880",
+                    "position": "D1",
+                }
+            ],
+        )
+        second = TireMasterImportRequest(
+            source_sheet="03_Llantas",
+            import_batch_id="canonical-b",
+            source_row_start=31,
+            rows=[
+                {
+                    "Serial": "LL-DUP-001",
+                    "Marca": "Michelin",
+                    "design": "Direccional",
+                    "Medida": "295/80R22.5",
+                    "Prof. original mm": 20,
+                    "Prof. actual mm": 10,
+                    "Placa actual": "LG880",
+                    "position": "D1",
+                }
+            ],
+        )
+
+        created = import_tire_master_rows(first, self.db, ADMIN)
+        updated = import_tire_master_rows(second, self.db, ADMIN)
+
+        tires = self.db.query(Tire).filter(Tire.serial_number == "LL-DUP-001").all()
+        self.assertEqual(created.created_tires, 1)
+        self.assertEqual(updated.created_tires, 0)
+        self.assertEqual(updated.updated_tires, 1)
+        self.assertEqual(len(tires), 1)
+        self.assertEqual(tires[0].remaining_tread_mm, 10)
 
     def test_tire_life_360_groups_identity_events_costs_risks_and_evidence(self):
         inspection = TireInspectionCreate(

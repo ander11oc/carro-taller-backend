@@ -139,6 +139,66 @@ class FleetAlertsTest(unittest.TestCase):
         db.close()
         engine.dispose()
 
+    def test_get_fleet_alerts_filters_operational_alerts_for_client_role(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        tenant = "tenant_test"
+        vehicle = Vehicle(
+            tenant_id=tenant,
+            plate="CLI-101",
+            brand="Toyota",
+            model="Hilux",
+            year=2020,
+            mileage=1000,
+        )
+        db.add(vehicle)
+        db.flush()
+        db.add_all(
+            [
+                Tire(
+                    tenant_id=tenant,
+                    serial_number="CLIENT-HIDDEN",
+                    position="FR",
+                    remaining_tread_mm=2.4,
+                    brand="KUMHO",
+                    vehicle_id=vehicle.id,
+                ),
+                InventoryItem(
+                    tenant_id=tenant,
+                    sku="ACEITE",
+                    name="Aceite",
+                    stock=1,
+                    min_stock=5,
+                ),
+                Document(
+                    tenant_id=tenant,
+                    vehicle_id=vehicle.id,
+                    doc_type="SOAT",
+                    file_url="local://soat.pdf",
+                    expires_on=date.today() + timedelta(days=3),
+                ),
+                MaintenanceOrder(
+                    tenant_id=tenant,
+                    vehicle_id=vehicle.id,
+                    title="Servicio publicado",
+                    status="open",
+                    priority="high",
+                ),
+            ]
+        )
+        db.commit()
+
+        admin_kinds = {alert["kind"] for alert in get_fleet_alerts(db, tenant, role="admin")}
+        client_kinds = {alert["kind"] for alert in get_fleet_alerts(db, tenant, role="client")}
+
+        self.assertIn("tire_tread", admin_kinds)
+        self.assertIn("inventory_low", admin_kinds)
+        self.assertEqual(client_kinds, {"document_expiring", "maintenance_high"})
+
+        db.close()
+        engine.dispose()
+
 
 if __name__ == "__main__":
     unittest.main()

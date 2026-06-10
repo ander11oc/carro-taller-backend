@@ -39,7 +39,20 @@ def make_alert(
     }
 
 
-def get_fleet_alerts(db: Session, tenant_id: str) -> list[dict]:
+def _filter_alerts_for_role(alerts: list[dict], role: str) -> list[dict]:
+    normalized_role = (role or "viewer").lower()
+    if normalized_role in {"admin", "planner", "coordinator", "viewer", "auditor"}:
+        return alerts
+    if normalized_role == "mechanic":
+        allowed_entities = {"tire", "tire-event", "vehicle-position", "maintenance", "inventory"}
+        return [alert for alert in alerts if alert["entity_type"] in allowed_entities]
+    if normalized_role == "client":
+        allowed_kinds = {"document_expiring", "maintenance_high"}
+        return [alert for alert in alerts if alert["kind"] in allowed_kinds]
+    return []
+
+
+def get_fleet_alerts(db: Session, tenant_id: str, role: str = "viewer") -> list[dict]:
     out: list[dict] = []
 
     critical_tires = (
@@ -187,4 +200,4 @@ def get_fleet_alerts(db: Session, tenant_id: str) -> list[dict]:
             )
         )
 
-    return out
+    return _filter_alerts_for_role(out, role)

@@ -141,6 +141,22 @@ def _normalize_catalog_value(value: str) -> str:
     return " ".join(value.strip().upper().replace("-", " ").split())
 
 
+def _normalize_serial(value: str) -> str:
+    return "".join(value.strip().upper().split())
+
+
+def _find_tire_by_serial(db: Session, user, serial: str) -> Tire | None:
+    normalized = _normalize_serial(serial)
+    return (
+        db.query(Tire)
+        .filter(
+            _scope(Tire, user),
+            func.upper(func.replace(func.trim(Tire.serial_number), " ", "")) == normalized,
+        )
+        .first()
+    )
+
+
 def _normalize_header(value: str) -> str:
     replacements = str.maketrans("áéíóúÁÉÍÓÚñÑ", "aeiouAEIOUnN")
     return "".join(
@@ -559,7 +575,8 @@ def preview_tire_master_import(
         if not all(normalized.values()):
             incomplete_count += 1
             continue
-        serial = normalized["serial_number"]
+        serial = _normalize_serial(normalized["serial_number"])
+        normalized["serial_number"] = serial
         serial_counts[serial] = serial_counts.get(serial, 0) + 1
         for catalog_type, aliases in {
             "brand": ("brand", "marca"),
@@ -620,7 +637,7 @@ def import_tire_master_rows(
 
     source_row_start = max(1, payload.source_row_start)
     for index, row in enumerate(payload.rows, start=source_row_start):
-        serial = _row_text(row, "serial_number", "serial", "codigo", "code", "internal_number")
+        serial = _normalize_serial(_row_text(row, "serial_number", "serial", "codigo", "code", "internal_number"))
         if not serial:
             skipped_rows += 1
             errors.append(f"Fila {index}: serial obligatorio.")
@@ -681,11 +698,22 @@ def import_tire_master_rows(
             db.flush()
             created_vehicles += 1
 
-        tire = (
-            db.query(Tire)
-            .filter(_scope(Tire, user), Tire.serial_number == serial)
-            .first()
-        )
+        tire = _find_tire_by_serial(db, user, serial)
+        event_novelty = f"Importado desde {payload.source_sheet} fila {index}. Batch {batch_id}."
+        if tire:
+            existing_import_event = (
+                db.query(TireEvent)
+                .filter(
+                    _scope(TireEvent, user),
+                    TireEvent.tire_id == tire.id,
+                    TireEvent.event_type == "master_import",
+                    TireEvent.novelty == event_novelty,
+                )
+                .first()
+            )
+            if existing_import_event:
+                skipped_rows += 1
+                continue
         tire_data = {
             "dot": _row_text(row, "dot", "DOT"),
             "brand": brand,
@@ -710,6 +738,15 @@ def import_tire_master_rows(
                 skipped_rows += 1
                 errors.append(f"Fila {index}: serial {serial} ya existe.")
                 continue
+            canonical_tire = (
+                db.query(Tire)
+                .filter(_scope(Tire, user), Tire.serial_number == serial)
+                .first()
+            )
+            if canonical_tire and canonical_tire.id != tire.id:
+                tire = canonical_tire
+            else:
+                tire.serial_number = serial
             for key, value in tire_data.items():
                 setattr(tire, key, value)
             updated_tires += 1
@@ -743,7 +780,6 @@ def import_tire_master_rows(
             )
             created_positions += 1
 
-        event_novelty = f"Importado desde {payload.source_sheet} fila {index}. Batch {batch_id}."
         existing_event = (
             db.query(TireEvent)
             .filter(
@@ -1994,7 +2030,7 @@ def dashboard(db: Session = Depends(get_db), user=Depends(get_current_user)):
 @router.get("/alerts", response_model=list[AlertOut])
 def alerts(db: Session = Depends(get_db), user=Depends(get_current_user)):
     require_module_action(user, "alerts", "read")
-    return get_fleet_alerts(db, user["tenant_id"])
+    return get_fleet_alerts(db, user["tenant_id"], role=user.get("role", "viewer"))
 
 
 @router.get("/audit-logs", response_model=list[AuditLogOut])
