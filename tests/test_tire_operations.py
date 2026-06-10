@@ -145,6 +145,25 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(err.exception.status_code, 400)
         self.assertIn("profundidad no puede subir", err.exception.detail)
 
+    def test_inspection_rejects_negative_or_zero_measurements(self):
+        payload = TireInspectionCreate(
+            tire_id=self.tire.id,
+            vehicle_id=self.vehicle.id,
+            position="P3",
+            event_date=date(2026, 6, 9),
+            mileage=10600,
+            pressure_psi=-1,
+            tread_outer_mm=-0.1,
+            tread_center_mm=0.1,
+            tread_inner_mm=0.1,
+        )
+
+        with self.assertRaises(HTTPException) as err:
+            create_tire_inspection(payload, self.db, ADMIN)
+
+        self.assertEqual(err.exception.status_code, 400)
+        self.assertIn("mayores que cero", err.exception.detail)
+
     def test_vehicle_map_marks_missing_positions_and_recommendations_are_explainable(self):
         payload = TireInspectionCreate(
             tire_id=self.tire.id,

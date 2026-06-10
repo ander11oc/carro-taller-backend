@@ -956,6 +956,10 @@ def create_tire_inspection(
     user=Depends(get_current_user),
 ):
     require_module_action(user, "tires", "create")
+    if payload.pressure_psi is not None and payload.pressure_psi <= 0:
+        raise HTTPException(status_code=400, detail="La presion y las profundidades deben ser mayores que cero.")
+    if payload.tread_outer_mm <= 0 or payload.tread_center_mm <= 0 or payload.tread_inner_mm <= 0:
+        raise HTTPException(status_code=400, detail="La presion y las profundidades deben ser mayores que cero.")
     tire = _get_or_404(db, Tire, payload.tire_id, user)
     _get_or_404(db, Vehicle, payload.vehicle_id, user)
     min_tread = _inspection_min_tread(payload)
