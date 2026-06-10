@@ -468,15 +468,35 @@ def delete_vehicle(
 # =====================================================
 @router.get("/tires", response_model=list[TireOut])
 def list_tires(
+    response: Response,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
     vehicle_id: Optional[int] = None,
+    q: Optional[str] = None,
+    brand: Optional[str] = None,
+    status_f: Optional[str] = Query(None, alias="status"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
     require_module_action(user, "tires", "read")
     query = db.query(Tire).filter(_scope(Tire, user))
     if vehicle_id is not None:
         query = query.filter(Tire.vehicle_id == vehicle_id)
-    return query.order_by(Tire.id.desc()).all()
+    if q:
+        pattern = f"%{q.lower()}%"
+        query = query.filter(
+            func.lower(Tire.serial_number).like(pattern)
+            | func.lower(Tire.brand).like(pattern)
+            | func.lower(Tire.design).like(pattern)
+            | func.lower(Tire.dimension).like(pattern)
+            | func.lower(Tire.position).like(pattern)
+        )
+    if brand:
+        query = query.filter(func.lower(Tire.brand).like(f"%{brand.lower()}%"))
+    if status_f:
+        query = query.filter(Tire.status == status_f)
+    response.headers["X-Total-Count"] = str(query.count())
+    return query.order_by(Tire.id.desc()).offset(offset).limit(limit).all()
 
 
 @router.post("/tires", response_model=TireOut, status_code=201)

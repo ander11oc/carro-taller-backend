@@ -4,7 +4,7 @@ import unittest
 
 os.environ["DATABASE_URL"] = "sqlite://"
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -173,6 +173,27 @@ class TireOperationsTest(unittest.TestCase):
         self.assertIn("calibrar", actions)
         self.assertIn("retirar", actions)
         self.assertIn("completar_mapa", actions)
+
+    def test_list_tires_is_paginated_and_reports_total_count(self):
+        from app.api.routes_fleet import list_tires
+
+        self.db.add(
+            Tire(
+                tenant_id="tenant_test",
+                serial_number="TR-PAGE-002",
+                position="P4",
+                brand="Michelin",
+                vehicle_id=self.vehicle.id,
+                remaining_tread_mm=8,
+            )
+        )
+        self.db.commit()
+
+        response = Response()
+        rows = list_tires(response=response, db=self.db, user=ADMIN, status_f=None, limit=1, offset=0)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(response.headers["X-Total-Count"], "2")
 
     def test_master_preview_detects_incomplete_rows_duplicates_and_missing_catalogs(self):
         preview = preview_tire_master_import(
