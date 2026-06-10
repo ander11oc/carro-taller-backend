@@ -20,6 +20,7 @@ ALL_MODULES = {
     "documents",
     "maintenance",
     "portal",
+    "requirements",
     "integrations",
     "media",
 }
@@ -38,6 +39,7 @@ ROLE_PERMISSIONS: dict[Role, dict[ModuleName, set[Action]]] = {
         "inventory": {"read", "create", "update"},
         "fuel-logs": {"read", "create", "update"},
         "tires": {"read", "create", "update"},
+        "requirements": {"read", "create", "update", "delete"},
         "integrations": {"read", "create", "update", "import"},
         "media": {"read", "create"},
     },
@@ -50,6 +52,7 @@ ROLE_PERMISSIONS: dict[Role, dict[ModuleName, set[Action]]] = {
         "inventory": {"read", "update"},
         "documents": {"read"},
         "maintenance": {"read", "update"},
+        "requirements": {"read", "create", "update"},
         "media": {"read", "create"},
     },
     "viewer": READ_ALL,

@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class VehicleBase(BaseModel):
@@ -532,6 +532,71 @@ class ClientPortalRecordUpdate(BaseModel):
 
 class ClientPortalRecordOut(ClientPortalRecordBase):
     id: int
+
+    class Config:
+        from_attributes = True
+
+
+MAX_REQUIREMENT_IMAGES = 6
+MAX_REQUIREMENT_IMAGE_CHARS = 850_000
+
+
+def _validate_requirement_images(images: Optional[list[str]]) -> Optional[list[str]]:
+    if images is None:
+        return images
+    if len(images) > MAX_REQUIREMENT_IMAGES:
+        raise ValueError("maximo 6 imagenes por requerimiento")
+    for image in images:
+        if len(image) > MAX_REQUIREMENT_IMAGE_CHARS:
+            raise ValueError("cada imagen debe pesar maximo 600KB aproximados")
+    return images
+
+
+class RequirementCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=180)
+    description: str = ""
+    requester: str = ""
+    images: list[str] = Field(default_factory=list)
+
+    @field_validator("images")
+    @classmethod
+    def validate_images(cls, images: list[str]) -> list[str]:
+        return _validate_requirement_images(images) or []
+
+
+class RequirementUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=180)
+    description: Optional[str] = None
+    requester: Optional[str] = None
+    status: Optional[str] = None
+    team_done: Optional[bool] = None
+    client_ok: Optional[bool] = None
+    images: Optional[list[str]] = None
+
+    @field_validator("images")
+    @classmethod
+    def validate_images(cls, images: Optional[list[str]]) -> Optional[list[str]]:
+        return _validate_requirement_images(images)
+
+
+class RequirementOut(BaseModel):
+    id: int
+    title: str
+    description: str = ""
+    requester: str = ""
+    status: str = "pending"
+    team_done: bool = False
+    client_ok: bool = False
+    images: list[str] = Field(default_factory=list)
+    created_by: str = ""
+    updated_by: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("images", mode="before")
+    @classmethod
+    def normalize_images(cls, images):
+        return images or []
 
     class Config:
         from_attributes = True

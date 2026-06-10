@@ -23,6 +23,7 @@ from app.models.entities import (
     Document,
     MaintenanceOrder,
     ClientPortalRecord,
+    Requirement,
     AuditLog,
 )
 from app.schemas.fleet import (
@@ -71,6 +72,9 @@ from app.schemas.fleet import (
     ClientPortalRecordCreate,
     ClientPortalRecordUpdate,
     ClientPortalRecordOut,
+    RequirementCreate,
+    RequirementUpdate,
+    RequirementOut,
     DashboardKpiOut,
     AlertOut,
     AuditLogOut,
@@ -129,6 +133,12 @@ def _write_audit_log(
         )
     )
     db.commit()
+
+
+def _normalize_requirement_state(item: Requirement) -> None:
+    if item.client_ok:
+        item.team_done = True
+    item.status = "approved" if item.client_ok else "completed" if item.team_done else "pending"
 
 
 def _csv_values(value: Optional[str]) -> list[str]:
@@ -1972,6 +1982,105 @@ def delete_portal(
     db.delete(item)
     db.commit()
     _write_audit_log(db, user, "portal", "delete", item_id, details)
+    return None
+
+
+# =====================================================
+# Requirements
+# =====================================================
+@router.get("/requirements", response_model=list[RequirementOut])
+def list_requirements(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "requirements", "read")
+    query = db.query(Requirement).filter(_scope(Requirement, user))
+    if status_filter:
+        query = query.filter(Requirement.status == status_filter)
+    return query.order_by(Requirement.created_at.desc(), Requirement.id.desc()).all()
+
+
+@router.post("/requirements", response_model=RequirementOut, status_code=201)
+def create_requirement(
+    payload: RequirementCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "requirements", "create")
+    item = Requirement(
+        tenant_id=user["tenant_id"],
+        title=payload.title.strip(),
+        description=payload.description,
+        requester=payload.requester,
+        images=payload.images,
+        created_by=user.get("email", ""),
+        updated_by=user.get("email", ""),
+    )
+    _normalize_requirement_state(item)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    _write_audit_log(db, user, "requirements", "create", item.id, item.title)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.get("/requirements/{item_id}", response_model=RequirementOut)
+def get_requirement(
+    item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    require_module_action(user, "requirements", "read")
+    return _get_or_404(db, Requirement, item_id, user)
+
+
+@router.put("/requirements/{item_id}", response_model=RequirementOut)
+def update_requirement(
+    item_id: int,
+    payload: RequirementUpdate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "requirements", "update")
+    item = _get_or_404(db, Requirement, item_id, user)
+    updates = payload.model_dump(exclude_unset=True)
+    status_value = updates.pop("status", None)
+    for field, value in updates.items():
+        if field == "title" and isinstance(value, str):
+            value = value.strip()
+        setattr(item, field, value)
+    if status_value:
+        if status_value == "approved":
+            item.team_done = True
+            item.client_ok = True
+        elif status_value == "completed":
+            item.team_done = True
+            item.client_ok = False
+        elif status_value == "pending":
+            item.team_done = False
+            item.client_ok = False
+    item.updated_by = user.get("email", "")
+    _normalize_requirement_state(item)
+    db.commit()
+    db.refresh(item)
+    _write_audit_log(db, user, "requirements", "update", item.id, item.title)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.delete("/requirements/{item_id}", status_code=204)
+def delete_requirement(
+    item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
+    require_module_action(user, "requirements", "delete")
+    item = _get_or_404(db, Requirement, item_id, user)
+    details = item.title
+    db.delete(item)
+    db.commit()
+    _write_audit_log(db, user, "requirements", "delete", item_id, details)
+    db.commit()
     return None
 
 

@@ -287,6 +287,22 @@ class ClientPortalRecord(Base, TimestampMixin):
     category: Mapped[str] = mapped_column(String(60), default="general")
 
 
+class Requirement(Base, TimestampMixin):
+    __tablename__ = "requirements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    title: Mapped[str] = mapped_column(String(180), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    requester: Mapped[str] = mapped_column(String(160), default="")
+    status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
+    team_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    client_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    images: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+
+
 class IntegrationConnector(Base, TimestampMixin):
     __tablename__ = "integration_connectors"
 
