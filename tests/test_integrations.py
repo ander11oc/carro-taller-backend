@@ -7,7 +7,7 @@ os.environ["DATABASE_URL"] = "sqlite://"
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.api.routes_integrations import create_integration_webhook, retry_integration_run
+from app.api.routes_integrations import create_integration_webhook, parse_integration_file, retry_integration_run
 from app.api.routes_media import create_media_upload_url
 from app.db.base import Base
 from app.models.entities import (
@@ -179,6 +179,17 @@ class IntegrationsTest(unittest.TestCase):
         self.assertEqual(retried.processed_records, 1)
         self.db.refresh(self.vehicle)
         self.assertEqual(self.vehicle.mileage, 1300)
+
+    def test_csv_upload_parser_creates_records_for_integration_processing(self):
+        csv_bytes = b"plate,odometer,speed\nGPS-101,1400,55\n"
+
+        records = parse_integration_file("gps.csv", csv_bytes, first_row_header=True)
+        run = create_integration_webhook("gps_telematics", IntegrationWebhookRequest(records=records, source="upload"), self.db, ADMIN)
+
+        self.db.refresh(self.vehicle)
+        self.assertEqual(run.source, "upload")
+        self.assertEqual(run.processed_records, 1)
+        self.assertEqual(self.vehicle.mileage, 1400)
 
 
 if __name__ == "__main__":

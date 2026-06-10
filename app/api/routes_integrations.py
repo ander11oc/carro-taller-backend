@@ -1,7 +1,10 @@
+import csv
 from datetime import date, datetime
+from io import BytesIO, StringIO
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -67,6 +70,57 @@ def _as_date(value: Any) -> date:
 
 def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
+
+
+def _cell_value(value: Any) -> str | int | float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    text = str(value).strip()
+    return text if text else None
+
+
+def _rows_to_records(rows: list[list[Any]], first_row_header: bool, columns: list[str] | None = None) -> list[dict[str, Any]]:
+    non_empty_rows = [row for row in rows if any(_cell_value(cell) is not None for cell in row)]
+    if not non_empty_rows:
+        return []
+
+    if first_row_header:
+        headers = [str(_cell_value(cell) or f"column_{index + 1}").strip() for index, cell in enumerate(non_empty_rows[0])]
+        data_rows = non_empty_rows[1:]
+    else:
+        headers = columns or [f"column_{index + 1}" for index in range(len(non_empty_rows[0]))]
+        data_rows = non_empty_rows
+
+    return [
+        {
+            headers[index] if index < len(headers) and headers[index] else f"column_{index + 1}": _cell_value(cell)
+            for index, cell in enumerate(row)
+        }
+        for row in data_rows
+    ]
+
+
+def parse_integration_file(
+    filename: str,
+    content: bytes,
+    sheet_name: str | None = None,
+    first_row_header: bool = True,
+    columns: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    lower_name = filename.lower()
+    if lower_name.endswith(".xlsx"):
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        selected_sheet = sheet_name if sheet_name and sheet_name in workbook.sheetnames else workbook.sheetnames[0]
+        rows = [list(row) for row in workbook[selected_sheet].iter_rows(values_only=True)]
+        return _rows_to_records(rows, first_row_header, columns)
+
+    text = content.decode("utf-8-sig")
+    sample = text[:2048]
+    delimiter = "\t" if "\t" in sample else ";" if sample.count(";") > sample.count(",") else ","
+    rows = [row for row in csv.reader(StringIO(text), delimiter=delimiter)]
+    return _rows_to_records(rows, first_row_header, columns)
 
 
 def _find_vehicle(db: Session, user: dict, plate: Any) -> Vehicle | None:
@@ -491,12 +545,24 @@ def create_integration_webhook(
 
 
 @router.post("/{system}/upload", response_model=IntegrationRunOut)
-def upload_integration_records(
+async def upload_integration_records(
     system: str,
-    payload: IntegrationWebhookRequest,
+    file: UploadFile = File(...),
+    sheet_name: str = Form(""),
+    first_row_header: bool = Form(True),
+    columns: str = Form(""),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
     require_module_action(user, "integrations", "import")
-    payload.source = "upload"
+    raw = await file.read()
+    column_list = [item.strip() for item in columns.split(",") if item.strip()]
+    records = parse_integration_file(
+        file.filename or f"{system}.csv",
+        raw,
+        sheet_name=sheet_name or None,
+        first_row_header=first_row_header,
+        columns=column_list or None,
+    )
+    payload = IntegrationWebhookRequest(records=records, source="upload")
     return create_integration_webhook(system, payload, db, user)
