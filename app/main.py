@@ -9,6 +9,8 @@ from app.db.schema_sync import ensure_model_columns
 from app.db.session import engine, SessionLocal
 from app.api.routes_auth import router as auth_router
 from app.api.routes_fleet import router as fleet_router
+from app.api.routes_integrations import router as integrations_router
+from app.api.routes_media import router as media_router
 from app.services.seed import seed_admin, seed_demo_data
 
 
@@ -45,3 +47,5 @@ def health():
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(fleet_router, prefix="/api/v1")
+app.include_router(integrations_router, prefix="/api/v1")
+app.include_router(media_router, prefix="/api/v1")

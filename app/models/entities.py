@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Float, Date, Text, Boolean
+from sqlalchemy import String, Integer, DateTime, ForeignKey, Float, Date, Text, Boolean, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -285,3 +285,96 @@ class ClientPortalRecord(Base, TimestampMixin):
     title: Mapped[str] = mapped_column(String(120))
     value: Mapped[str] = mapped_column(String(255))
     category: Mapped[str] = mapped_column(String(60), default="general")
+
+
+class IntegrationConnector(Base, TimestampMixin):
+    __tablename__ = "integration_connectors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    system: Mapped[str] = mapped_column(String(80), index=True)
+    name: Mapped[str] = mapped_column(String(160), default="")
+    integration_type: Mapped[str] = mapped_column(String(40), default="api_file")
+    frequency: Mapped[str] = mapped_column(String(40), default="manual")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class IntegrationRun(Base, TimestampMixin):
+    __tablename__ = "integration_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    system: Mapped[str] = mapped_column(String(80), index=True)
+    source: Mapped[str] = mapped_column(String(40), default="webhook")
+    status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
+    total_records: Mapped[int] = mapped_column(Integer, default=0)
+    processed_records: Mapped[int] = mapped_column(Integer, default=0)
+    failed_records: Mapped[int] = mapped_column(Integer, default=0)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    errors: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class IntegrationEvent(Base, TimestampMixin):
+    __tablename__ = "integration_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("integration_runs.id"), nullable=True, index=True)
+    system: Mapped[str] = mapped_column(String(80), index=True)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    entity_type: Mapped[str] = mapped_column(String(80), default="")
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="processed", index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class PurchaseRequest(Base, TimestampMixin):
+    __tablename__ = "purchase_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    request_type: Mapped[str] = mapped_column(String(80), default="tire", index=True)
+    origin: Mapped[str] = mapped_column(String(120), default="")
+    provider_suggested: Mapped[str] = mapped_column(String(160), default="")
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    priority: Mapped[str] = mapped_column(String(40), default="normal")
+    status: Mapped[str] = mapped_column(String(40), default="suggested", index=True)
+    source_system: Mapped[str] = mapped_column(String(80), default="")
+    external_id: Mapped[str] = mapped_column(String(120), default="", index=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+
+class MediaAsset(Base, TimestampMixin):
+    __tablename__ = "media_assets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    url: Mapped[str] = mapped_column(String(500), default="")
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    content_type: Mapped[str] = mapped_column(String(120), default="")
+    entity_type: Mapped[str] = mapped_column(String(80), default="", index=True)
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    evidence_type: Mapped[str] = mapped_column(String(80), default="evidence")
+    uploaded_by: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(40), default="pending")
+    source: Mapped[str] = mapped_column(String(80), default="media_storage")
+
+
+class NotificationMessage(Base, TimestampMixin):
+    __tablename__ = "notification_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    channel: Mapped[str] = mapped_column(String(40), index=True)
+    template: Mapped[str] = mapped_column(String(80), index=True)
+    entity_type: Mapped[str] = mapped_column(String(80), default="", index=True)
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    recipient: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
