@@ -15,6 +15,7 @@ from app.models.entities import (
     IntegrationEvent,
     IntegrationRun,
     MaintenanceOrder,
+    MediaAsset,
     NotificationMessage,
     PurchaseRequest,
     Tire,
@@ -390,6 +391,40 @@ def _process_erp(record: dict[str, Any], db: Session, run: IntegrationRun, user:
     )
 
 
+def _process_media_storage(record: dict[str, Any], db: Session, run: IntegrationRun, user: dict) -> None:
+    filename = _text(record.get("filename") or record.get("name") or "evidencia")
+    entity_type = _text(record.get("entity_type"))
+    entity_id = record.get("entity_id")
+    entity_id_int = _as_int(entity_id, 0) if entity_id not in (None, "") else None
+    url = _text(record.get("url") or record.get("public_url") or record.get("evidence_url")) or f"local://media/{filename}"
+    existing = (
+        db.query(MediaAsset)
+        .filter(
+            MediaAsset.tenant_id == _tenant(user),
+            MediaAsset.url == url,
+            MediaAsset.entity_type == entity_type,
+            MediaAsset.entity_id == entity_id_int,
+        )
+        .first()
+    )
+    if existing:
+        return
+    db.add(
+        MediaAsset(
+            tenant_id=_tenant(user),
+            url=url,
+            filename=filename,
+            content_type=_text(record.get("content_type")) or "application/octet-stream",
+            entity_type=entity_type,
+            entity_id=entity_id_int,
+            evidence_type=_text(record.get("evidence_type")) or "evidence",
+            uploaded_by=_actor(user),
+            status=_text(record.get("status")) or "available",
+            source=run.system,
+        )
+    )
+
+
 def _process_notifications(record: dict[str, Any], db: Session, run: IntegrationRun, user: dict) -> None:
     channel = _text(record.get("channel")) or "email"
     template = _text(record.get("template")) or "alerta_operativa"
@@ -431,6 +466,7 @@ PROCESSORS: dict[str, Callable[[dict[str, Any], Session, IntegrationRun, dict], 
     "fuel": _process_fuel,
     "purchases": _process_purchases,
     "retread_providers": _process_retread,
+    "media_storage": _process_media_storage,
     "notifications": _process_notifications,
 }
 

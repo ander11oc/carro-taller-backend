@@ -146,6 +146,12 @@ class IntegrationsTest(unittest.TestCase):
             self.db,
             ADMIN,
         )
+        media_run = create_integration_webhook(
+            "media_storage",
+            IntegrationWebhookRequest(records=[{"filename": "inspeccion.jpg", "content_type": "image/jpeg", "entity_type": "tire", "entity_id": self.tire.id, "url": "local://media/inspeccion.jpg"}]),
+            self.db,
+            ADMIN,
+        )
         media = create_media_upload_url(
             MediaUploadRequest(filename="evidencia.jpg", content_type="image/jpeg", entity_type="tire", entity_id=self.tire.id),
             self.db,
@@ -155,7 +161,8 @@ class IntegrationsTest(unittest.TestCase):
         self.assertEqual(self.db.query(PurchaseRequest).count(), 1)
         self.assertEqual(self.db.query(TireEvent).filter(TireEvent.event_type == "retread_received").count(), 1)
         self.assertEqual(self.db.query(NotificationMessage).count(), 1)
-        self.assertEqual(self.db.query(MediaAsset).count(), 1)
+        self.assertEqual(media_run.status, "completed")
+        self.assertEqual(self.db.query(MediaAsset).count(), 2)
         self.assertTrue(media.upload_url.startswith("local://media/"))
 
     def test_retry_reprocesses_failed_run_and_updates_status(self):
