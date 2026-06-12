@@ -481,6 +481,123 @@ def delete_vehicle(
     return None
 
 
+# ── Vehicle CSV import ──────────────────────────────────────────────────────
+import io as _io
+import csv as _csv
+from fastapi import UploadFile, File
+
+class VehicleImportResult(BaseModel):
+    created: int
+    skipped: int
+    errors: list[str]
+
+@router.post("/vehicles/import-csv", response_model=VehicleImportResult)
+def import_vehicles_csv(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    Importa vehículos desde un CSV con columnas:
+    Vehículo, Tipo, Marca/Línea, Conductor, Capacidad, Ciudad,
+    Centro de Costos, Grupo primario, Grupo secundario, Tolerancia
+    """
+    require_module_action(user, "vehicles", "create")
+    tenant_id = user["tenant_id"]
+
+    raw = file.file.read().decode("utf-8-sig", errors="replace")
+    lines = raw.splitlines()
+
+    # Skip metadata header rows until the data header is found
+    data_lines: list[str] = []
+    header_found = False
+    for line in lines:
+        if not header_found:
+            if "Tipo" in line and ("culo" in line or "cula" in line):
+                header_found = True
+                data_lines.append(line)
+        else:
+            if line.strip():
+                data_lines.append(line)
+
+    if not data_lines:
+        raise HTTPException(status_code=400, detail="No se encontró la fila de encabezado en el CSV")
+
+    reader = _csv.DictReader(data_lines)
+    created = 0
+    skipped = 0
+    errors: list[str] = []
+
+    for row in reader:
+        row = {k.strip().rstrip(","): (v or "").strip() for k, v in row.items() if k}
+
+        # Plate — handle encoding variants
+        plate = ""
+        for key in row:
+            if "culo" in key.lower() or key.lower().startswith("veh"):
+                plate = row[key].strip().upper()
+                break
+        if not plate:
+            continue
+
+        # Skip if already exists
+        existing = db.query(Vehicle).filter(
+            Vehicle.plate == plate,
+            Vehicle.tenant_id == tenant_id
+        ).first()
+        if existing:
+            skipped += 1
+            continue
+
+        tipo = row.get("Tipo", "").strip()
+
+        # Marca/Línea — handle encoding variants
+        marca_raw = ""
+        for key in row:
+            if "nea" in key.lower() or "Marca" in key:
+                marca_raw = row[key].strip()
+                break
+
+        parts = marca_raw.split(" ", 1)
+        brand = parts[0] if parts else ""
+        model = parts[1] if len(parts) > 1 else tipo
+
+        conductor = row.get("Conductor", "").strip()
+        ciudad    = row.get("Ciudad", "").strip()
+        cdc       = row.get("Centro de Costos", "").strip()
+        grupo_p   = row.get("Grupo primario", "").strip()
+        grupo_s   = row.get("Grupo secundario", "").strip()
+
+        try:
+            v = Vehicle(
+                tenant_id      = tenant_id,
+                plate          = plate,
+                brand          = brand,
+                model          = model,
+                year           = 2020,
+                vehicle_type   = tipo,
+                mileage        = 0.0,
+                status         = "active",
+                site           = ciudad,
+                notes          = f"Grupo: {grupo_s}" if grupo_s else "",
+                cost_center    = cdc,
+                line           = grupo_p,
+                current_driver = conductor,
+                owner          = "",
+            )
+            db.add(v)
+            db.flush()
+            created += 1
+        except Exception as exc:
+            errors.append(f"{plate}: {exc}")
+            db.rollback()
+
+    db.commit()
+    return VehicleImportResult(created=created, skipped=skipped, errors=errors)
+
+
+
+
 # =====================================================
 # Tires
 # =====================================================
