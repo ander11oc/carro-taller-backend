@@ -528,11 +528,13 @@ def delete_vehicle(
 import io as _io
 import csv as _csv
 from fastapi import UploadFile, File
+from pydantic import BaseModel as _BaseModel
 
-class VehicleImportResult(BaseModel):
+class VehicleImportResult(_BaseModel):
     created: int
     skipped: int
     errors: list[str]
+
 
 @router.post("/vehicles/import-csv", response_model=VehicleImportResult)
 def import_vehicles_csv(
