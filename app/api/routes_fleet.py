@@ -446,18 +446,18 @@ def create_vehicle(
     return item
 
 
-@router.delete("/vehicles/purge-all", status_code=200)
+@router.post("/vehicles/admin/purge", status_code=200)
 def purge_all_vehicles(
     db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
-    """Admin-only: borra TODOS los vehículos con cascade (eventos + llantas)."""
+    """Admin-only: borra TODOS los vehiculos con cascade (eventos + llantas)."""
     require_module_action(user, "vehicles", "delete")
     if user.get("role") not in ("admin", "superadmin"):
-        raise HTTPException(status_code=403, detail="Solo administradores pueden ejecutar purge-all")
+        raise HTTPException(status_code=403, detail="Solo administradores")
     tenant_id = user["tenant_id"]
     vids = [v.id for v in db.query(Vehicle.id).filter(Vehicle.tenant_id == tenant_id).all()]
     if not vids:
-        return {"deleted": 0, "message": "No hay vehiculos para borrar"}
+        return {"deleted": 0, "message": "No hay vehiculos"}
     db.query(TireEvent).filter(TireEvent.vehicle_id.in_(vids)).delete(synchronize_session=False)
     db.query(Tire).filter(Tire.vehicle_id.in_(vids)).delete(synchronize_session=False)
     db.query(Vehicle).filter(Vehicle.id.in_(vids)).delete(synchronize_session=False)
