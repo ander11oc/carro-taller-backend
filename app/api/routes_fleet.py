@@ -418,6 +418,8 @@ def list_vehicles(
     user=Depends(get_current_user),
     q: Optional[str] = Query(None),
     status_f: Optional[str] = Query(None, alias="status"),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ):
     require_module_action(user, "vehicles", "read")
     query = db.query(Vehicle).filter(_scope(Vehicle, user))
@@ -430,7 +432,8 @@ def list_vehicles(
         )
     if status_f:
         query = query.filter(Vehicle.status == status_f)
-    return query.order_by(Vehicle.id.desc()).all()
+    return query.order_by(Vehicle.id.desc()).offset(offset).limit(limit).all()
+
 
 
 @router.post("/vehicles", response_model=VehicleOut, status_code=201)
