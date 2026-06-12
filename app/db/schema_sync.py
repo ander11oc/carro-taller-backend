@@ -17,7 +17,17 @@ STRING_DEFAULTS = {
     "provider": "",
     "source_sheet": "",
     "import_batch_id": "",
+    # Vehicle — VehicleTireView fields
+    "owner": "",
+    "line": "",
+    "current_driver": "",
+    "cost_center": "",
+    # TireEvent — 4-zone tread & pressure obs
+    "obs_tread": "",
+    "obs_pressure": "",
+    "alignment_type": "",
 }
+
 
 
 def _sql_literal(value: str) -> str:

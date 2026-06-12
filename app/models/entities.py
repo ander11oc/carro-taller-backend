@@ -49,6 +49,13 @@ class Vehicle(Base, TimestampMixin):
     mileage: Mapped[float] = mapped_column(Float, default=0)
     status: Mapped[str] = mapped_column(String(40), default="active")
     notes: Mapped[str] = mapped_column(Text, default="")
+    # VehicleTireView extended fields
+    horometer: Mapped[float | None] = mapped_column(Float, nullable=True)
+    horometer_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    owner: Mapped[str] = mapped_column(String(160), default="")
+    line: Mapped[str] = mapped_column(String(80), default="")
+    current_driver: Mapped[str] = mapped_column(String(160), default="")
+    cost_center: Mapped[str] = mapped_column(String(80), default="")
 
 
 class Tire(Base, TimestampMixin):
@@ -78,6 +85,10 @@ class Tire(Base, TimestampMixin):
     source_sheet: Mapped[str] = mapped_column(String(120), default="")
     source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
     import_batch_id: Mapped[str] = mapped_column(String(80), default="")
+    # VehicleTireView extended fields
+    mount_mileage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tread_at_mount_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_km_all_lives: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class TireCatalogEntry(Base, TimestampMixin):
@@ -135,6 +146,11 @@ class TireEvent(Base, TimestampMixin):
     created_role: Mapped[str] = mapped_column(String(50), default="")
     requires_approval: Mapped[bool] = mapped_column(Boolean, default=False)
     approved_by: Mapped[str] = mapped_column(String(255), default="")
+    # VehicleTireView extended fields
+    tread_center_outer_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    obs_tread: Mapped[str] = mapped_column(Text, default="")
+    obs_pressure: Mapped[str] = mapped_column(Text, default="")
+    alignment_type: Mapped[str] = mapped_column(String(80), default="")
 
 
 class RetiredTireRecord(Base, TimestampMixin):

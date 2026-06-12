@@ -642,3 +642,139 @@ class AuditLogOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ============================================================
+# VehicleTireView schemas
+# ============================================================
+
+class VehicleInfoOut(BaseModel):
+    id: int
+    plate: str
+    brand: str
+    model: str
+    year: int
+    mileage: float
+    horometer: Optional[float] = None
+    horometer_at: Optional[datetime] = None
+    owner: str = ""
+    line: str = ""
+    current_driver: str = ""
+    cost_center: str = ""
+    status: str = ""
+    notes: str = ""
+
+    class Config:
+        from_attributes = True
+
+
+class VehicleTireRowOut(BaseModel):
+    id: int
+    position: str
+    code: str
+    tire_label: str
+    brand: str
+    design: str
+    dimension: str
+    life_code: str
+    mount_date: Optional[date] = None
+    mount_mileage: Optional[float] = None
+    last_tread_date: Optional[date] = None
+    last_tread_km: Optional[float] = None
+    km_total: Optional[float] = None
+    km_in_vehicle: Optional[float] = None
+    tire_cost: Optional[float] = None
+    remaining_tread_mm: float
+    original_tread_mm: Optional[float] = None
+    tread_at_mount_mm: Optional[float] = None
+    tread_worn_mm: Optional[float] = None
+    tread_wear_pct: Optional[float] = None
+    target_pressure_psi: Optional[float] = None
+    last_pressure_psi: Optional[float] = None
+    pressure_status: str = "unknown"
+    status_color: str = "ok"
+    serial_number: str
+    dot: str = ""
+    retread_band: str = ""
+    provider: str = ""
+    status: str
+    location: str = ""
+    days_since_inspection: Optional[int] = None
+    life_cycle: str = ""
+
+    class Config:
+        from_attributes = True
+
+
+class VehicleEventItemOut(BaseModel):
+    id: int
+    event_type: str
+    event_date: date
+    position: str
+    tire_serial: str
+    mileage: Optional[float] = None
+    pressure_psi: Optional[float] = None
+    min_tread_mm: Optional[float] = None
+    tread_outer_mm: Optional[float] = None
+    tread_center_mm: Optional[float] = None
+    tread_center_outer_mm: Optional[float] = None
+    tread_inner_mm: Optional[float] = None
+    damage: str = ""
+    novelty: str = ""
+    guidance: str = ""
+    created_by: str = ""
+    requires_approval: bool = False
+    approved_by: str = ""
+    destination: str = ""
+    provider: str = ""
+    cost: Optional[float] = None
+    obs_tread: str = ""
+    obs_pressure: str = ""
+
+    class Config:
+        from_attributes = True
+
+
+class MountTirePayload(BaseModel):
+    tire_id: Optional[int] = None
+    position: str
+    mount_date: date
+    mount_mileage: Optional[float] = None
+    tread_at_mount_mm: Optional[float] = None
+    provider: str = ""
+    cost: Optional[float] = None
+    add_cost_to_vehicle: bool = False
+    observation: str = ""
+
+
+class DismountTireItem(BaseModel):
+    tire_id: int
+    destination: str = ""
+    tread_inner_mm: Optional[float] = None
+    tread_center_mm: Optional[float] = None
+    tread_center_outer_mm: Optional[float] = None
+    tread_outer_mm: Optional[float] = None
+    pressure_psi: Optional[float] = None
+    obs_tread: str = ""
+    obs_pressure: str = ""
+
+
+class DismountBatchPayload(BaseModel):
+    dismount_date: date
+    dismount_mileage: Optional[float] = None
+    tires: list[DismountTireItem]
+
+
+class AlignmentPayload(BaseModel):
+    alignment_date: date
+    mileage: Optional[float] = None
+    provider: str = ""
+    cost: Optional[float] = None
+    alignment_type: str = "direccion"
+    observation: str = ""
+
+
+class DismountBatchResult(BaseModel):
+    created: int
+    guidance: str
+
