@@ -475,10 +475,14 @@ def delete_vehicle(
     require_module_action(user, "vehicles", "delete")
     item = _get_or_404(db, Vehicle, item_id, user)
     details = item.plate
+    # Cascade: remove related events and tires first
+    db.query(TireEvent).filter(TireEvent.vehicle_id == item_id).delete(synchronize_session=False)
+    db.query(Tire).filter(Tire.vehicle_id == item_id).delete(synchronize_session=False)
     db.delete(item)
     db.commit()
     _write_audit_log(db, user, "vehicles", "delete", item_id, details)
     return None
+
 
 
 # ── Vehicle CSV import ──────────────────────────────────────────────────────
