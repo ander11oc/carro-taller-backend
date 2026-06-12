@@ -497,13 +497,29 @@ def delete_vehicle(
     require_module_action(user, "vehicles", "delete")
     item = _get_or_404(db, Vehicle, item_id, user)
     details = item.plate
-    # Cascade: remove related events and tires first
+    # ── Full cascade delete (6 FK tables) ──────────────────────────────────
+    # 1. VehicleTirePosition
+    db.query(VehicleTirePosition).filter(VehicleTirePosition.vehicle_id == item_id).delete(synchronize_session=False)
+    # 2. TireEvent — direct vehicle_id reference
     db.query(TireEvent).filter(TireEvent.vehicle_id == item_id).delete(synchronize_session=False)
+    # 3. TireEvent — via tire (tire_id of tires belonging to this vehicle)
+    tire_ids = [t.id for t in db.query(Tire.id).filter(Tire.vehicle_id == item_id).all()]
+    if tire_ids:
+        db.query(TireEvent).filter(TireEvent.tire_id.in_(tire_ids)).delete(synchronize_session=False)
+    # 4. Tire
     db.query(Tire).filter(Tire.vehicle_id == item_id).delete(synchronize_session=False)
+    # 5. FuelLog
+    db.query(FuelLog).filter(FuelLog.vehicle_id == item_id).delete(synchronize_session=False)
+    # 6. Document
+    db.query(Document).filter(Document.vehicle_id == item_id).delete(synchronize_session=False)
+    # 7. MaintenanceOrder
+    db.query(MaintenanceOrder).filter(MaintenanceOrder.vehicle_id == item_id).delete(synchronize_session=False)
+    # 8. Delete vehicle
     db.delete(item)
     db.commit()
     _write_audit_log(db, user, "vehicles", "delete", item_id, details)
     return None
+
 
 
 
