@@ -104,6 +104,8 @@ def parse_number(value: Any) -> float | None:
         text = text.replace(".", "").replace(",", ".")
     elif "," in text:
         text = text.replace(",", ".")
+    elif "." in text and len(text.rsplit(".", 1)[-1]) == 3:
+        text = text.replace(".", "")
     elif text.count(".") > 1:
         text = text.replace(".", "")
     try:
@@ -211,8 +213,7 @@ def has_vehicle_input(page) -> bool:
     return bool(
         page.evaluate(
             """
-            () => Array.from(document.querySelectorAll('input'))
-              .some(input => input.offsetParent !== null && ['text', 'search', ''].includes(input.type || ''))
+            () => !!document.querySelector('#c_ctlMenuLlantasXVehiculo1_ctlVehicle_TxtPlaca')
             """
         )
     )
@@ -298,7 +299,7 @@ def wait_for_cloudfleet_session(page, url: str, headless: bool) -> None:
         raise RuntimeError("Estoy en Llantas del Vehiculo, pero no encontre el input de vehiculo.")
 
 
-def search_vehicle(page, plate: str) -> None:
+def search_vehicle_legacy(page, plate: str) -> None:
     page.goto(CLOUDFLEET_URL, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(500)
     page.evaluate(
@@ -337,7 +338,36 @@ def search_vehicle(page, plate: str) -> None:
     page.wait_for_timeout(2500)
 
 
-def extract_mount_rows(page) -> list[dict[str, Any]]:
+def search_vehicle(page, plate: str) -> None:
+    goto_cloudfleet_page(page, CLOUDFLEET_URL)
+    vehicle_selector = "#c_ctlMenuLlantasXVehiculo1_ctlVehicle_TxtPlaca"
+    button_selector = "#c_ctlMenuLlantasXVehiculo1_cmdFindVehicle"
+    page.wait_for_selector(vehicle_selector, timeout=30000)
+    page.fill(vehicle_selector, "")
+    page.fill(vehicle_selector, plate)
+    page.evaluate(
+        """
+        (selector) => {
+          const input = document.querySelector(selector);
+          if (!input) throw new Error('No se encontro input real de vehiculo.');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        """,
+        vehicle_selector,
+    )
+    page.wait_for_timeout(300)
+    try:
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+            page.click(button_selector)
+    except PlaywrightError as exc:
+        if "timeout" not in str(exc).lower():
+            raise
+    page.wait_for_load_state("domcontentloaded", timeout=30000)
+    page.wait_for_timeout(2500)
+
+
+def extract_mount_rows_legacy(page) -> list[dict[str, Any]]:
     raw_rows = page.evaluate(
         """
         () => {
@@ -367,6 +397,36 @@ def extract_mount_rows(page) -> list[dict[str, Any]]:
             }).filter(item => Object.values(item).some(Boolean));
           }
           return [];
+        }
+        """
+    )
+    normalized = []
+    for row in raw_rows:
+        item = normalize_mount_row(row)
+        if item:
+            normalized.append(item)
+    return normalized
+
+
+def extract_mount_rows(page) -> list[dict[str, Any]]:
+    raw_rows = page.evaluate(
+        """
+        () => {
+          const table = document.querySelector('#c_grdLlantas');
+          if (!table) return [];
+          const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+          const headers = Array.from(table.querySelectorAll(':scope > thead > tr > th'))
+            .map((cell, index) => clean(cell.innerText) || `col_${index}`);
+          return Array.from(table.querySelectorAll(':scope > tbody > tr')).map(row => {
+            const cells = Array.from(row.querySelectorAll(':scope > td')).map(cell => clean(cell.innerText));
+            const item = {};
+            headers.forEach((header, index) => { item[header] = cells[index] || ''; });
+            return item;
+          }).filter(item => {
+            const position = (item['Pos.'] || '').trim();
+            const code = (item['Cod.'] || '').trim();
+            return position && code && !position.toLowerCase().includes('total');
+          });
         }
         """
     )
