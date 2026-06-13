@@ -116,6 +116,27 @@ def _get_or_404(db: Session, model, item_id: int, user):
     return obj
 
 
+def _attach_tire_vehicle_plates(db: Session, user, tires: list[Tire]) -> list[Tire]:
+    vehicle_ids = {tire.vehicle_id for tire in tires if tire.vehicle_id is not None}
+    if not vehicle_ids:
+        return tires
+    plates = {
+        vehicle_id: plate
+        for vehicle_id, plate in (
+            db.query(Vehicle.id, Vehicle.plate)
+            .filter(_scope(Vehicle, user), Vehicle.id.in_(vehicle_ids))
+            .all()
+        )
+    }
+    for tire in tires:
+        tire.vehicle_plate = plates.get(tire.vehicle_id, "")
+    return tires
+
+
+def _attach_tire_vehicle_plate(db: Session, user, tire: Tire) -> Tire:
+    return _attach_tire_vehicle_plates(db, user, [tire])[0]
+
+
 def _apply_update(obj, payload):
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(obj, field, value)
@@ -477,6 +498,21 @@ def purge_all_vehicles(
     return {"deleted": len(vids), "message": f"{len(vids)} vehiculos eliminados"}
 
 
+@router.get("/vehicles/search", response_model=list[VehicleOut])
+def search_vehicles_by_plate(
+    q: str = Query(""),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Autocomplete de vehiculo por placa para VehicleTireView."""
+    require_module_action(user, "vehicles", "read")
+    query = db.query(Vehicle).filter(_scope(Vehicle, user))
+    if q and len(q) >= 1:
+        pattern = f"%{q.upper()}%"
+        query = query.filter(func.upper(Vehicle.plate).like(pattern))
+    return query.order_by(Vehicle.plate).limit(20).all()
+
+
 @router.get("/vehicles/{item_id}", response_model=VehicleOut)
 def get_vehicle(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     require_module_action(user, "vehicles", "read")
@@ -693,7 +729,8 @@ def list_tires(
     if status_f:
         query = query.filter(Tire.status == status_f)
     response.headers["X-Total-Count"] = str(query.count())
-    return query.order_by(Tire.id.desc()).offset(offset).limit(limit).all()
+    rows = query.order_by(Tire.id.desc()).offset(offset).limit(limit).all()
+    return _attach_tire_vehicle_plates(db, user, rows)
 
 
 @router.post("/tires", response_model=TireOut, status_code=201)
@@ -714,7 +751,7 @@ def create_tire(
         db.commit()
         db.refresh(item)
         _write_audit_log(db, user, "tires", "create", item.id, item.serial_number)
-        return item
+        return _attach_tire_vehicle_plate(db, user, item)
     except Exception as exc:
         db.rollback()
         if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
@@ -1663,7 +1700,7 @@ def get_tire_life_360(
 @router.get("/tires/{item_id}", response_model=TireOut)
 def get_tire(item_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     require_module_action(user, "tires", "read")
-    return _get_or_404(db, Tire, item_id, user)
+    return _attach_tire_vehicle_plate(db, user, _get_or_404(db, Tire, item_id, user))
 
 
 @router.put("/tires/{item_id}", response_model=TireOut)
@@ -1679,7 +1716,7 @@ def update_tire(
     db.commit()
     db.refresh(item)
     _write_audit_log(db, user, "tires", "update", item.id, item.serial_number)
-    return item
+    return _attach_tire_vehicle_plate(db, user, item)
 
 
 @router.delete("/tires/{item_id}", status_code=204)
@@ -2503,21 +2540,6 @@ def _build_tire_row(db: Session, user, vehicle: Vehicle, tire: Tire) -> dict:
         "days_since_inspection": days_since,
         "life_cycle": tire.life_cycle,
     }
-
-
-@router.get("/vehicles/search", response_model=list[VehicleOut])
-def search_vehicles_by_plate(
-    q: str = Query(""),
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    """Autocomplete de vehículo por placa para VehicleTireView."""
-    require_module_action(user, "vehicles", "read")
-    query = db.query(Vehicle).filter(_scope(Vehicle, user))
-    if q and len(q) >= 1:
-        pattern = f"%{q.upper()}%"
-        query = query.filter(func.upper(Vehicle.plate).like(pattern))
-    return query.order_by(Vehicle.plate).limit(20).all()
 
 
 @router.get("/vehicles/{vehicle_id}/info", response_model=VehicleInfoOut)
