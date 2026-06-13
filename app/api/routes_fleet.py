@@ -684,12 +684,25 @@ def create_tire(
     payload: TireCreate, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
     require_module_action(user, "tires", "create")
-    item = Tire(tenant_id=user["tenant_id"], **payload.model_dump())
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    _write_audit_log(db, user, "tires", "create", item.id, item.serial_number)
-    return item
+    # Check for existing serial_number within the same tenant to return 409 not 500
+    existing = db.query(Tire).filter(
+        Tire.tenant_id == user["tenant_id"],
+        Tire.serial_number == payload.serial_number,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Tire serial '{payload.serial_number}' already exists")
+    try:
+        item = Tire(tenant_id=user["tenant_id"], **payload.model_dump())
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+        _write_audit_log(db, user, "tires", "create", item.id, item.serial_number)
+        return item
+    except Exception as exc:
+        db.rollback()
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+            raise HTTPException(status_code=409, detail=f"Tire serial '{payload.serial_number}' already exists")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/tires/catalogs", response_model=list[TireCatalogEntryOut])
