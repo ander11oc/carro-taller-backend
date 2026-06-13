@@ -286,6 +286,50 @@ class TireOperationsTest(unittest.TestCase):
 
         self.assertEqual(err.exception.status_code, 409)
 
+    def test_mount_tire_links_existing_provider_and_normalizes_position(self):
+        provider = Provider(
+            tenant_id="tenant_test",
+            name="Solistica",
+            normalized_name="SOLISTICA",
+            provider_type="montaje",
+            is_active=True,
+        )
+        new_tire = Tire(
+            tenant_id="tenant_test",
+            serial_number="NEW-902",
+            position="",
+            brand="Michelin",
+            remaining_tread_mm=18,
+            status="warehouse",
+        )
+        self.db.add_all([provider, new_tire])
+        self.db.commit()
+        self.db.refresh(new_tire)
+        self.db.refresh(provider)
+
+        event = mount_tire_to_vehicle(
+            self.vehicle.id,
+            MountTirePayload(
+                tire_id=new_tire.id,
+                position=" P1 ",
+                mount_date=date(2026, 6, 14),
+                mount_mileage=10800,
+                tread_at_mount_mm=18,
+                provider=" Solistica ",
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        self.db.refresh(new_tire)
+        stored_event = self.db.query(TireEvent).filter(TireEvent.id == event.id).one()
+        position = self.db.query(VehicleTirePosition).filter(VehicleTirePosition.position_code == "P1").one()
+        self.assertEqual(new_tire.position, "P1")
+        self.assertEqual(new_tire.provider, "Solistica")
+        self.assertEqual(new_tire.provider_id, provider.id)
+        self.assertEqual(stored_event.provider_id, provider.id)
+        self.assertEqual(position.tire_id, new_tire.id)
+
     def test_rotate_vehicle_tires_swaps_positions_and_records_event(self):
         other = Tire(
             tenant_id="tenant_test",

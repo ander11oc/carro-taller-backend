@@ -2097,6 +2097,8 @@ def create_tire_movement(
     tire = _get_or_404(db, Tire, payload.tire_id, user) if payload.tire_id is not None else None
     if payload.vehicle_id is not None:
         _get_or_404(db, Vehicle, payload.vehicle_id, user)
+    provider_name = payload.provider.strip()
+    provider_obj = _find_provider_by_name(db, user, provider_name)
     event = TireEvent(
         tenant_id=user["tenant_id"],
         tire_id=payload.tire_id,
@@ -2107,7 +2109,8 @@ def create_tire_movement(
         mileage=payload.mileage,
         origin=payload.origin,
         destination=payload.destination,
-        provider=payload.provider,
+        provider=provider_name,
+        provider_id=provider_obj.id if provider_obj else None,
         cost=payload.cost,
         novelty=payload.novelty,
         evidence_url=payload.evidence_url,
@@ -3473,13 +3476,18 @@ def mount_tire_to_vehicle(
     vehicle = _get_or_404(db, Vehicle, vehicle_id, user)
     if not payload.tire_id:
         raise HTTPException(status_code=400, detail="tire_id requerido para montaje.")
+    mount_position = payload.position.strip()
+    if not mount_position:
+        raise HTTPException(status_code=400, detail="position requerido para montaje.")
+    provider_name = payload.provider.strip()
+    provider_obj = _find_provider_by_name(db, user, provider_name)
     tire = _get_or_404(db, Tire, payload.tire_id, user)
     position_obj = (
         db.query(VehicleTirePosition)
         .filter(
             _scope(VehicleTirePosition, user),
             VehicleTirePosition.vehicle_id == vehicle_id,
-            VehicleTirePosition.position_code == payload.position,
+            VehicleTirePosition.position_code == mount_position,
         )
         .first()
     )
@@ -3496,7 +3504,7 @@ def mount_tire_to_vehicle(
             .filter(
                 _scope(Tire, user),
                 Tire.vehicle_id == vehicle_id,
-                Tire.position == payload.position,
+                Tire.position == mount_position,
                 Tire.status == "mounted",
                 Tire.id != tire.id,
             )
@@ -3520,7 +3528,7 @@ def mount_tire_to_vehicle(
             mileage=payload.mount_mileage,
             min_tread_mm=occupied_tire.remaining_tread_mm,
             destination="warehouse",
-            novelty=f"Desmontaje automatico por cambio de llanta en posicion {payload.position}.",
+            novelty=f"Desmontaje automatico por cambio de llanta en posicion {mount_position}.",
             guidance=f"{occupied_tire.serial_number} desmontada por reemplazo en {vehicle.plate}.",
             created_by=user["email"],
             created_role=user.get("role", ""),
@@ -3540,9 +3548,12 @@ def mount_tire_to_vehicle(
             previous_position_obj.tire_id = None
 
     tire.vehicle_id = vehicle_id
-    tire.position = payload.position
+    tire.position = mount_position
     tire.status = "mounted"
     tire.location = ""
+    if provider_name:
+        tire.provider = provider_name
+        tire.provider_id = provider_obj.id if provider_obj else None
     if payload.mount_mileage is not None:
         tire.mount_mileage = payload.mount_mileage
     if payload.tread_at_mount_mm is not None:
@@ -3553,7 +3564,7 @@ def mount_tire_to_vehicle(
         db.add(VehicleTirePosition(
             tenant_id=user["tenant_id"],
             vehicle_id=vehicle_id,
-            position_code=payload.position,
+            position_code=mount_position,
             tire_id=tire.id,
         ))
     event = TireEvent(
@@ -3562,9 +3573,10 @@ def mount_tire_to_vehicle(
         vehicle_id=vehicle_id,
         event_type="mount",
         event_date=payload.mount_date,
-        position=payload.position,
+        position=mount_position,
         mileage=payload.mount_mileage,
-        provider=payload.provider,
+        provider=provider_name,
+        provider_id=provider_obj.id if provider_obj else None,
         cost=payload.cost,
         novelty=payload.observation,
         guidance=f"Montaje en posiciÃ³n {payload.position}.",
@@ -3574,7 +3586,7 @@ def mount_tire_to_vehicle(
     db.add(event)
     db.commit()
     db.refresh(event)
-    _write_audit_log(db, user, "tires", "mount", tire.id, f"{tire.serial_number} -> {vehicle.plate} pos {payload.position}")
+    _write_audit_log(db, user, "tires", "mount", tire.id, f"{tire.serial_number} -> {vehicle.plate} pos {mount_position}")
     return TireEventOut(**_event_payload(event))
 
 
@@ -3697,6 +3709,8 @@ def rotate_vehicle_tires(
     to_position = payload.to_position.strip()
     if not from_position or not to_position or from_position == to_position:
         raise HTTPException(status_code=400, detail="Selecciona posiciones origen y destino diferentes.")
+    provider_name = payload.provider.strip()
+    provider_obj = _find_provider_by_name(db, user, provider_name)
 
     from_tire = (
         db.query(Tire)
@@ -3753,7 +3767,8 @@ def rotate_vehicle_tires(
         mileage=payload.mileage,
         origin=from_position,
         destination=to_position,
-        provider=payload.provider,
+        provider=provider_name,
+        provider_id=provider_obj.id if provider_obj else None,
         cost=payload.cost,
         novelty=payload.observation or f"Rotacion {from_position} -> {to_position}.",
         guidance=f"Rotacion registrada en {vehicle.plate}: {from_position} <-> {to_position}.",
@@ -3777,6 +3792,8 @@ def create_alignment(
     """Registrar alineaciÃ³n del vehÃ­culo."""
     require_module_action(user, "tires", "create")
     _get_or_404(db, Vehicle, vehicle_id, user)
+    provider_name = payload.provider.strip()
+    provider_obj = _find_provider_by_name(db, user, provider_name)
     event = TireEvent(
         tenant_id=user["tenant_id"],
         vehicle_id=vehicle_id,
@@ -3784,7 +3801,8 @@ def create_alignment(
         event_date=payload.alignment_date,
         position=",".join(position.strip() for position in payload.positions if position.strip()),
         mileage=payload.mileage,
-        provider=payload.provider,
+        provider=provider_name,
+        provider_id=provider_obj.id if provider_obj else None,
         cost=payload.cost,
         novelty=payload.observation,
         created_by=user["email"],
