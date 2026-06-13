@@ -3451,6 +3451,7 @@ def get_vehicle_tire_events(
             tread_inner_mm=event.tread_inner_mm,
             damage=event.damage or "",
             novelty=event.novelty or "",
+            evidence_url=event.evidence_url or "",
             guidance=event.guidance or "",
             created_by=event.created_by or "",
             requires_approval=event.requires_approval,

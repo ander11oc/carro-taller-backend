@@ -20,6 +20,7 @@ from app.api.routes_fleet import (
     get_tire_decision_motor,
     get_tire_life_360,
     get_tire_operational_reports,
+    get_vehicle_tire_events,
     import_tire_master_rows,
     preview_tire_master_import,
     get_tire_recommendations,
@@ -140,6 +141,28 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(result.guidance, "Presion por debajo del objetivo. Calibrar y revisar en la proxima inspeccion.")
         self.assertEqual(self.db.query(TireEvent).count(), 1)
         self.assertEqual(self.db.query(Tire).one().remaining_tread_mm, 10)
+
+    def test_vehicle_tire_events_include_inspection_evidence_url(self):
+        create_tire_inspection(
+            TireInspectionCreate(
+                tire_id=self.tire.id,
+                vehicle_id=self.vehicle.id,
+                position="P3",
+                event_date=date(2026, 6, 9),
+                mileage=10600,
+                pressure_psi=92,
+                tread_outer_mm=11,
+                tread_center_mm=10.5,
+                tread_inner_mm=10,
+                evidence_url="local://foto-inspeccion.jpg",
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        events = get_vehicle_tire_events(self.vehicle.id, 1, 50, self.db, ADMIN)
+
+        self.assertEqual(events[0].evidence_url, "local://foto-inspeccion.jpg")
 
     def test_inspection_uses_four_tread_measurements_and_can_be_corrected_without_duplicate(self):
         payload = TireInspectionCreate(

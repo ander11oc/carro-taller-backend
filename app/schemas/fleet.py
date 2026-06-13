@@ -855,6 +855,7 @@ class VehicleEventItemOut(BaseModel):
     tread_inner_mm: Optional[float] = None
     damage: str = ""
     novelty: str = ""
+    evidence_url: str = ""
     guidance: str = ""
     created_by: str = ""
     requires_approval: bool = False
