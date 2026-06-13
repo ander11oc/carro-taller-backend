@@ -572,6 +572,7 @@ def delete_vehicle(
 # ── Vehicle CSV import ──────────────────────────────────────────────────────
 import io as _io
 import csv as _csv
+import unicodedata as _unicodedata
 from fastapi import UploadFile, File
 from pydantic import BaseModel as _BaseModel
 
@@ -624,40 +625,69 @@ def import_vehicles_csv(
         digits = "".join(ch for ch in value if ch.isdigit())
         return float(digits) if digits else 0.0
 
+    def normalize_key(value: str) -> str:
+        ascii_value = _unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+        return ascii_value.strip().lower()
+
+    def row_value(row: dict[str, str], *names: str) -> str:
+        wanted = {normalize_key(name) for name in names}
+        for key, value in row.items():
+            if normalize_key(key) in wanted:
+                return value.strip()
+        return ""
+
+    def row_value_containing(row: dict[str, str], *needles: str) -> str:
+        wanted = [normalize_key(needle) for needle in needles]
+        for key, value in row.items():
+            key_norm = normalize_key(key)
+            if all(needle in key_norm for needle in wanted):
+                return value.strip()
+        return ""
+
+    def merge_notes(existing_notes: str, incoming_notes: str) -> str:
+        order: list[str] = []
+        values: dict[str, str] = {}
+        for source in (existing_notes, incoming_notes):
+            for item in source.split(";"):
+                clean = item.strip()
+                if not clean:
+                    continue
+                key = clean.split(":", 1)[0].strip().lower() if ":" in clean else clean.lower()
+                if key not in values:
+                    order.append(key)
+                values[key] = clean
+        return "; ".join(values[key] for key in order)
+
     for row in reader:
         row = {k.strip().rstrip(","): (v or "").strip() for k, v in row.items() if k}
 
         # Plate — handle encoding variants
-        plate = ""
-        for key in row:
-            if "culo" in key.lower() or key.lower().startswith("veh"):
-                plate = row[key].strip().upper()
-                break
+        plate = row_value_containing(row, "vehiculo").upper()
         if not plate:
             continue
 
-        tipo = row.get("Tipo", "").strip()
+        tipo = row_value(row, "Tipo") or row_value_containing(row, "tipo", "vehiculo")
 
         # Marca/Línea — handle encoding variants
-        marca_raw = ""
-        for key in row:
-            if "nea" in key.lower() or "Marca" in key:
-                marca_raw = row[key].strip()
-                break
+        marca_raw = row_value(row, "Marca/Linea", "Marca/Línea")
 
-        parts = marca_raw.split(" ", 1)
-        brand = parts[0] if parts else ""
-        model = parts[1] if len(parts) > 1 else tipo
+        if marca_raw:
+            parts = marca_raw.split(" ", 1)
+            brand = parts[0] if parts else ""
+            model = parts[1] if len(parts) > 1 else tipo
+        else:
+            brand = row_value(row, "Marca")
+            model = row_value(row, "Linea", "Línea") or tipo
 
-        conductor = row.get("Conductor", "").strip()
-        ciudad    = row.get("Ciudad", "").strip()
-        cdc       = row.get("Centro de Costos", "").strip()
-        grupo_p   = row.get("Grupo primario", "").strip()
-        grupo_s   = row.get("Grupo secundario", "").strip()
-        km_actual = 0.0
+        conductor = row_value(row, "Conductor", "Conductor Actual")
+        ciudad    = row_value(row, "Ciudad")
+        cdc       = row_value(row, "Centro de Costos")
+        grupo_p   = row_value(row, "Grupo primario")
+        grupo_s   = row_value(row, "Grupo secundario")
+        km_actual: float | None = None
         for key, value in row.items():
-            key_norm = key.lower()
-            if "km" in key_norm and "actual" in key_norm:
+            key_norm = normalize_key(key)
+            if "km" in key_norm and "actual" in key_norm and value.strip():
                 km_actual = parse_current_km(value)
                 break
 
@@ -680,11 +710,15 @@ def import_vehicles_csv(
             if existing:
                 existing.brand = brand or existing.brand
                 existing.model = model or existing.model
-                existing.mileage = km_actual
-                existing.notes = notes or existing.notes
-                existing.cost_center = cdc
+                if km_actual is not None:
+                    existing.mileage = km_actual
+                if notes:
+                    existing.notes = merge_notes(existing.notes or "", notes)
+                if cdc:
+                    existing.cost_center = cdc
                 existing.line = model or existing.line
-                existing.current_driver = conductor
+                if conductor:
+                    existing.current_driver = conductor
                 updated += 1
             else:
                 v = Vehicle(
@@ -693,7 +727,7 @@ def import_vehicles_csv(
                     brand=brand,
                     model=model,
                     year=2020,
-                    mileage=km_actual,
+                    mileage=km_actual or 0.0,
                     status="active",
                     notes=notes,
                     cost_center=cdc,

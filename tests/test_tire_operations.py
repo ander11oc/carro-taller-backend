@@ -297,6 +297,70 @@ class TireOperationsTest(unittest.TestCase):
         self.assertIn("Grupo primario: Operacion", vehicle.notes)
         self.assertIn("Grupo secundario: Primario", vehicle.notes)
 
+    def test_vehicle_csv_import_accepts_equipment_search_export_columns(self):
+        csv_text = "\n".join(
+            [
+                "Buscar Equipo",
+                "Vehiculo,Identificacion Aux.,km Actual,Horometro Actual,Marca,Linea,Tipo Vehiculo,Centro de Costos,Ciudad",
+                "QJL223,,42.949,N/D,SHACMAN,X5000,TRACTOCAMION,218,BOGOTA",
+            ]
+        )
+
+        result = import_vehicles_csv(CsvUpload(csv_text), self.db, ADMIN)
+
+        vehicle = self.db.query(Vehicle).filter(
+            Vehicle.plate == "QJL223",
+            Vehicle.tenant_id == "tenant_test",
+        ).one()
+        self.assertEqual(result.created, 1)
+        self.assertEqual(vehicle.brand, "SHACMAN")
+        self.assertEqual(vehicle.model, "X5000")
+        self.assertEqual(vehicle.line, "X5000")
+        self.assertEqual(vehicle.mileage, 42949)
+        self.assertEqual(vehicle.cost_center, "218")
+        self.assertIn("Tipo: TRACTOCAMION", vehicle.notes)
+        self.assertIn("Ciudad: BOGOTA", vehicle.notes)
+
+    def test_vehicle_csv_import_preserves_existing_values_when_source_is_incomplete(self):
+        existing = Vehicle(
+            tenant_id="tenant_test",
+            plate="QJL223",
+            brand="SHACMAN",
+            model="X5000",
+            year=2020,
+            mileage=42949,
+            status="active",
+            notes="Tipo: TRACTOCAMION; Ciudad: BOGOTA; Grupo primario: Operacion; Grupo secundario: Primario",
+            line="X5000",
+            current_driver="Sin Definir",
+            cost_center="218",
+        )
+        self.db.add(existing)
+        self.db.commit()
+
+        csv_text = "\n".join(
+            [
+                "Reporte exportado",
+                "Vehiculo,Tipo,Marca/Linea,Conductor,Ciudad,Centro de Costos,Grupo primario,Grupo secundario,Tolerancia",
+                "QJL223,TRACTOCAMION,SHACMAN X5000,,,,,,Disponible completo",
+            ]
+        )
+
+        result = import_vehicles_csv(CsvUpload(csv_text), self.db, ADMIN)
+
+        vehicle = self.db.query(Vehicle).filter(
+            Vehicle.plate == "QJL223",
+            Vehicle.tenant_id == "tenant_test",
+        ).one()
+        self.assertEqual(result.updated, 1)
+        self.assertEqual(vehicle.mileage, 42949)
+        self.assertEqual(vehicle.current_driver, "Sin Definir")
+        self.assertEqual(vehicle.cost_center, "218")
+        self.assertEqual(vehicle.line, "X5000")
+        self.assertIn("Ciudad: BOGOTA", vehicle.notes)
+        self.assertIn("Grupo primario: Operacion", vehicle.notes)
+        self.assertIn("Grupo secundario: Primario", vehicle.notes)
+
     def test_master_preview_detects_incomplete_rows_duplicates_and_missing_catalogs(self):
         preview = preview_tire_master_import(
             TireMasterPreviewRequest(
