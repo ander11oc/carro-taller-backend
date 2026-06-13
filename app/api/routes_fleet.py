@@ -577,6 +577,7 @@ from pydantic import BaseModel as _BaseModel
 
 class VehicleImportResult(_BaseModel):
     created: int
+    updated: int = 0
     skipped: int
     errors: list[str]
 
@@ -615,8 +616,13 @@ def import_vehicles_csv(
 
     reader = _csv.DictReader(data_lines)
     created = 0
+    updated = 0
     skipped = 0
     errors: list[str] = []
+
+    def parse_current_km(value: str) -> float:
+        digits = "".join(ch for ch in value if ch.isdigit())
+        return float(digits) if digits else 0.0
 
     for row in reader:
         row = {k.strip().rstrip(","): (v or "").strip() for k, v in row.items() if k}
@@ -628,15 +634,6 @@ def import_vehicles_csv(
                 plate = row[key].strip().upper()
                 break
         if not plate:
-            continue
-
-        # Skip if already exists
-        existing = db.query(Vehicle).filter(
-            Vehicle.plate == plate,
-            Vehicle.tenant_id == tenant_id
-        ).first()
-        if existing:
-            skipped += 1
             continue
 
         tipo = row.get("Tipo", "").strip()
@@ -657,6 +654,12 @@ def import_vehicles_csv(
         cdc       = row.get("Centro de Costos", "").strip()
         grupo_p   = row.get("Grupo primario", "").strip()
         grupo_s   = row.get("Grupo secundario", "").strip()
+        km_actual = 0.0
+        for key, value in row.items():
+            key_norm = key.lower()
+            if "km" in key_norm and "actual" in key_norm:
+                km_actual = parse_current_km(value)
+                break
 
         notes = "; ".join(
             item
@@ -669,29 +672,43 @@ def import_vehicles_csv(
         )
 
         try:
-            v = Vehicle(
-                tenant_id=tenant_id,
-                plate=plate,
-                brand=brand,
-                model=model,
-                year=2020,
-                mileage=0.0,
-                status="active",
-                notes=notes,
-                cost_center=cdc,
-                line=grupo_p,
-                current_driver=conductor,
-                owner="",
-            )
-            db.add(v)
-            db.flush()
-            created += 1
+            existing = db.query(Vehicle).filter(
+                Vehicle.plate == plate,
+                Vehicle.tenant_id == tenant_id
+            ).first()
+            if existing:
+                existing.brand = brand or existing.brand
+                existing.model = model or existing.model
+                existing.mileage = km_actual
+                existing.notes = notes or existing.notes
+                existing.cost_center = cdc
+                existing.line = grupo_p
+                existing.current_driver = conductor
+                updated += 1
+            else:
+                v = Vehicle(
+                    tenant_id=tenant_id,
+                    plate=plate,
+                    brand=brand,
+                    model=model,
+                    year=2020,
+                    mileage=km_actual,
+                    status="active",
+                    notes=notes,
+                    cost_center=cdc,
+                    line=grupo_p,
+                    current_driver=conductor,
+                    owner="",
+                )
+                db.add(v)
+                db.flush()
+                created += 1
         except Exception as exc:
             errors.append(f"{plate}: {exc}")
             db.rollback()
 
     db.commit()
-    return VehicleImportResult(created=created, skipped=skipped, errors=errors)
+    return VehicleImportResult(created=created, updated=updated, skipped=skipped, errors=errors)
 
 
 

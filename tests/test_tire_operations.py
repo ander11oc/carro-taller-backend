@@ -1,4 +1,5 @@
 from datetime import date
+from io import BytesIO
 import os
 import unittest
 
@@ -22,6 +23,7 @@ from app.api.routes_fleet import (
     preview_tire_master_import,
     get_tire_recommendations,
     get_vehicle_tire_map,
+    import_vehicles_csv,
 )
 from app.db.base import Base
 from app.models.entities import Tire, TireEvent, Vehicle, VehicleTirePosition
@@ -33,6 +35,11 @@ ADMIN = {
     "email": "admin@test.local",
     "role": "admin",
 }
+
+
+class CsvUpload:
+    def __init__(self, content: str):
+        self.file = BytesIO(content.encode("utf-8"))
 
 
 class TireOperationsTest(unittest.TestCase):
@@ -213,6 +220,73 @@ class TireOperationsTest(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(response.headers["X-Total-Count"], "2")
+        self.assertEqual(getattr(rows[0], "vehicle_plate"), "CAUCA-808")
+
+    def test_vehicle_csv_import_uses_existing_vehicle_fields(self):
+        csv_text = "\n".join(
+            [
+                "Reporte exportado",
+                "Vehiculo,Tipo,Marca/Linea,km Actual,Conductor,Ciudad,Centro de Costos,Grupo primario,Grupo secundario",
+                "abc-123,Camion,Chevrolet NPR,42.949,Ana Ruiz,Medellin,CC-01,Primario A,Secundario B",
+            ]
+        )
+
+        result = import_vehicles_csv(CsvUpload(csv_text), self.db, ADMIN)
+
+        vehicle = self.db.query(Vehicle).filter(Vehicle.plate == "ABC-123").one()
+        self.assertEqual(result.created, 1)
+        self.assertEqual(result.skipped, 0)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(vehicle.brand, "Chevrolet")
+        self.assertEqual(vehicle.model, "NPR")
+        self.assertEqual(vehicle.current_driver, "Ana Ruiz")
+        self.assertEqual(vehicle.cost_center, "CC-01")
+        self.assertEqual(vehicle.line, "Primario A")
+        self.assertEqual(vehicle.mileage, 42949)
+        self.assertIn("Camion", vehicle.notes)
+        self.assertIn("Medellin", vehicle.notes)
+        self.assertIn("Secundario B", vehicle.notes)
+
+    def test_vehicle_csv_import_updates_existing_vehicle_fields(self):
+        existing = Vehicle(
+            tenant_id="tenant_test",
+            plate="QJL223",
+            brand="OLD",
+            model="OLD",
+            year=2020,
+            mileage=0,
+            status="active",
+            notes="",
+            line="",
+            current_driver="",
+            cost_center="",
+        )
+        self.db.add(existing)
+        self.db.commit()
+
+        csv_text = "\n".join(
+            [
+                "Reporte exportado",
+                "Vehiculo,Tipo,Marca/Linea,km Actual,Conductor,Ciudad,Centro de Costos,Grupo primario,Grupo secundario",
+                "QJL223,TRACTOCAMION,SHACMAN X5000,42.949,Sin Definir,BOGOTA,218,Operacion,Primario",
+            ]
+        )
+
+        result = import_vehicles_csv(CsvUpload(csv_text), self.db, ADMIN)
+
+        vehicle = self.db.query(Vehicle).filter(
+            Vehicle.plate == "QJL223",
+            Vehicle.tenant_id == "tenant_test",
+        ).one()
+        self.assertEqual(result.created, 0)
+        self.assertEqual(result.skipped, 0)
+        self.assertEqual(result.updated, 1)
+        self.assertEqual(vehicle.brand, "SHACMAN")
+        self.assertEqual(vehicle.model, "X5000")
+        self.assertEqual(vehicle.mileage, 42949)
+        self.assertEqual(vehicle.current_driver, "Sin Definir")
+        self.assertEqual(vehicle.cost_center, "218")
+        self.assertIn("TRACTOCAMION", vehicle.notes)
 
     def test_master_preview_detects_incomplete_rows_duplicates_and_missing_catalogs(self):
         preview = preview_tire_master_import(
