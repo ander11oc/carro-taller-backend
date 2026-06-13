@@ -90,6 +90,7 @@ class TireUpdate(BaseModel):
 
 class TireOut(TireBase):
     id: int
+    vehicle_plate: str = ""
 
     class Config:
         from_attributes = True
@@ -108,6 +109,48 @@ class TireCatalogEntryOut(TireCatalogEntryCreate):
 
     class Config:
         from_attributes = True
+
+
+class ProviderBase(BaseModel):
+    name: str
+    contact: str = ""
+    email: str = ""
+    provider_type: str = ""
+    categories: str = ""
+    city: str = ""
+    source_sheet: str = ""
+    source_row: Optional[int] = None
+    is_active: bool = True
+
+
+class ProviderCreate(ProviderBase):
+    pass
+
+
+class ProviderUpdate(BaseModel):
+    name: Optional[str] = None
+    contact: Optional[str] = None
+    email: Optional[str] = None
+    provider_type: Optional[str] = None
+    categories: Optional[str] = None
+    city: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ProviderOut(ProviderBase):
+    id: int
+    normalized_name: str
+
+    class Config:
+        from_attributes = True
+
+
+class ProviderImportResultOut(BaseModel):
+    total_rows: int
+    created: int
+    updated: int
+    skipped: int
+    errors: list[str]
 
 
 class VehicleTirePositionCreate(BaseModel):
@@ -777,4 +820,3 @@ class AlignmentPayload(BaseModel):
 class DismountBatchResult(BaseModel):
     created: int
     guidance: str
-

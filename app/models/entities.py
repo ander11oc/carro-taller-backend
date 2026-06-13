@@ -103,6 +103,23 @@ class TireCatalogEntry(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class Provider(Base, TimestampMixin):
+    __tablename__ = "providers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    name: Mapped[str] = mapped_column(String(180), index=True)
+    normalized_name: Mapped[str] = mapped_column(String(180), index=True)
+    contact: Mapped[str] = mapped_column(String(180), default="")
+    email: Mapped[str] = mapped_column(String(255), default="")
+    provider_type: Mapped[str] = mapped_column(String(80), default="", index=True)
+    categories: Mapped[str] = mapped_column(String(255), default="")
+    city: Mapped[str] = mapped_column(String(120), default="", index=True)
+    source_sheet: Mapped[str] = mapped_column(String(120), default="")
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class VehicleTirePosition(Base, TimestampMixin):
     __tablename__ = "vehicle_tire_positions"
 

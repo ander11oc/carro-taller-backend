@@ -1,10 +1,12 @@
-﻿from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta
+import csv
+import io
 import re
 import unicodedata
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import String, func
 from sqlalchemy.orm import Session
 
@@ -14,6 +16,7 @@ from app.models.entities import (
     Vehicle,
     Tire,
     TireCatalogEntry,
+    Provider,
     TireEvent,
     VehicleTirePosition,
     RetiredTireRecord,
@@ -37,6 +40,10 @@ from app.schemas.fleet import (
     TireOut,
     TireCatalogEntryCreate,
     TireCatalogEntryOut,
+    ProviderCreate,
+    ProviderUpdate,
+    ProviderOut,
+    ProviderImportResultOut,
     TireInspectionCreate,
     TireMovementCreate,
     TireEventOut,
@@ -552,6 +559,178 @@ def _ensure_tire_catalog(db: Session, user, catalog_type: str, value: str) -> No
             normalized_value=normalized,
         )
     )
+
+
+def _normalize_provider_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return " ".join(normalized.upper().split())
+
+
+def _provider_from_row(row: dict, source_sheet: str, source_row: int) -> dict[str, str | int]:
+    return {
+        "name": _row_text(row, "nombre", "name"),
+        "contact": _row_text(row, "contacto", "contact"),
+        "email": _row_text(row, "e-mail", "email", "correo"),
+        "provider_type": _row_text(row, "tipo", "type"),
+        "categories": _row_text(row, "categorias", "categorías", "categories"),
+        "city": _row_text(row, "ciudad", "city"),
+        "source_sheet": source_sheet,
+        "source_row": source_row,
+    }
+
+
+# =====================================================
+# Providers
+# =====================================================
+@router.get("/providers", response_model=list[ProviderOut])
+def list_providers(
+    response: Response,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    q: Optional[str] = Query(None),
+    provider_type: Optional[str] = None,
+    city: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    require_module_action(user, "integrations", "read")
+    query = db.query(Provider).filter(_scope(Provider, user), Provider.is_active.is_(True))
+    if q:
+        pattern = f"%{q.lower()}%"
+        query = query.filter(
+            func.lower(Provider.name).like(pattern)
+            | func.lower(Provider.contact).like(pattern)
+            | func.lower(Provider.email).like(pattern)
+        )
+    if provider_type:
+        query = query.filter(func.lower(Provider.provider_type).like(f"%{provider_type.lower()}%"))
+    if city:
+        query = query.filter(func.lower(Provider.city).like(f"%{city.lower()}%"))
+    response.headers["X-Total-Count"] = str(query.count())
+    return query.order_by(Provider.name.asc()).offset(offset).limit(limit).all()
+
+
+@router.post("/providers", response_model=ProviderOut, status_code=201)
+def create_provider(
+    payload: ProviderCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "integrations", "create")
+    normalized = _normalize_provider_name(payload.name)
+    existing = (
+        db.query(Provider)
+        .filter(_scope(Provider, user), Provider.normalized_name == normalized)
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Proveedor '{payload.name}' ya existe")
+    item = Provider(tenant_id=user["tenant_id"], normalized_name=normalized, **payload.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    _write_audit_log(db, user, "providers", "create", item.id, item.name)
+    return item
+
+
+@router.put("/providers/{item_id}", response_model=ProviderOut)
+def update_provider(
+    item_id: int,
+    payload: ProviderUpdate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "integrations", "update")
+    item = _get_or_404(db, Provider, item_id, user)
+    values = payload.model_dump(exclude_unset=True)
+    for field, value in values.items():
+        setattr(item, field, value)
+    if "name" in values and values["name"]:
+        item.normalized_name = _normalize_provider_name(str(values["name"]))
+    db.commit()
+    db.refresh(item)
+    _write_audit_log(db, user, "providers", "update", item.id, item.name)
+    return item
+
+
+@router.post("/providers/import-csv", response_model=ProviderImportResultOut)
+def import_providers_csv(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "integrations", "import")
+    raw = file.file.read()
+    text = None
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = raw.decode("utf-8", errors="replace")
+
+    lines = text.splitlines()
+    header_index = None
+    for index, line in enumerate(lines):
+        if "Nombre" in line and "Contacto" in line and "Tipo" in line:
+            header_index = index
+            break
+    if header_index is None:
+        raise HTTPException(status_code=400, detail="No se encontro encabezado de proveedores.")
+
+    rows = list(csv.DictReader(io.StringIO("\n".join(lines[header_index:]))))
+    created = 0
+    updated = 0
+    skipped = 0
+    errors: list[str] = []
+    filename = getattr(file, "filename", "") or "Lista_Proveedores.csv"
+    source_sheet = filename.rsplit(".", 1)[0]
+
+    for offset, row in enumerate(rows, start=header_index + 2):
+        data = _provider_from_row(row, source_sheet, offset)
+        name = str(data["name"] or "").strip()
+        if not name:
+            skipped += 1
+            continue
+        normalized = _normalize_provider_name(name)
+        try:
+            existing = (
+                db.query(Provider)
+                .filter(_scope(Provider, user), Provider.normalized_name == normalized)
+                .first()
+            )
+            if existing:
+                for key, value in data.items():
+                    setattr(existing, key, value)
+                existing.normalized_name = normalized
+                existing.is_active = True
+                updated += 1
+            else:
+                db.add(
+                    Provider(
+                        tenant_id=user["tenant_id"],
+                        normalized_name=normalized,
+                        **data,
+                    )
+                )
+                created += 1
+        except Exception as exc:
+            errors.append(f"Fila {offset}: {name}: {exc}")
+            db.rollback()
+
+    db.commit()
+    _write_audit_log(db, user, "providers", "import-csv", None, f"{created} creados, {updated} actualizados")
+    return ProviderImportResultOut(
+        total_rows=len(rows),
+        created=created,
+        updated=updated,
+        skipped=skipped,
+        errors=errors,
+    )
+
 
 # =====================================================
 # Vehicles

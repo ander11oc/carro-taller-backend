@@ -23,11 +23,12 @@ from app.api.routes_fleet import (
     preview_tire_master_import,
     get_tire_recommendations,
     get_vehicle_tire_map,
+    import_providers_csv,
     import_vehicles_csv,
     router,
 )
 from app.db.base import Base
-from app.models.entities import Tire, TireEvent, Vehicle, VehicleTirePosition
+from app.models.entities import Provider, Tire, TireEvent, Vehicle, VehicleTirePosition
 from app.schemas.fleet import TireCatalogEntryCreate, TireInspectionCreate, TireMasterImportRequest, TireMasterPreviewRequest, TireMovementCreate
 
 
@@ -360,6 +361,41 @@ class TireOperationsTest(unittest.TestCase):
         self.assertIn("Ciudad: BOGOTA", vehicle.notes)
         self.assertIn("Grupo primario: Operacion", vehicle.notes)
         self.assertIn("Grupo secundario: Primario", vehicle.notes)
+
+    def test_provider_csv_import_creates_and_updates_dedicated_provider_rows(self):
+        csv_text = "\n".join(
+            [
+                "INFORME:,Lista de Proveedores",
+                "FECHA:,12/jun./2026 22:58",
+                "",
+                "Nombre,Contacto,E-Mail,Tipo,Categorias,Ciudad,",
+                "\"AUTOMUNDIAL SA\",\"Michell\",\"ventas@automundial.com.co\",\"Llantas\",\"\",\"BOGOTA\",",
+                "\"REMAX\",\"\",\"\",\"Llantas\",\"\",\"CALI\",",
+            ]
+        )
+
+        first = import_providers_csv(CsvUpload(csv_text), self.db, ADMIN)
+        second = import_providers_csv(
+            CsvUpload(csv_text.replace("Michell", "Michell Actualizada")),
+            self.db,
+            ADMIN,
+        )
+
+        providers = self.db.query(Provider).order_by(Provider.name).all()
+        automundial = (
+            self.db.query(Provider)
+            .filter(Provider.normalized_name == "AUTOMUNDIAL SA")
+            .one()
+        )
+
+        self.assertEqual(first.created, 2)
+        self.assertEqual(first.updated, 0)
+        self.assertEqual(second.created, 0)
+        self.assertEqual(second.updated, 2)
+        self.assertEqual(len(providers), 2)
+        self.assertEqual(automundial.provider_type, "Llantas")
+        self.assertEqual(automundial.contact, "Michell Actualizada")
+        self.assertEqual(automundial.city, "BOGOTA")
 
     def test_master_preview_detects_incomplete_rows_duplicates_and_missing_catalogs(self):
         preview = preview_tire_master_import(
