@@ -39,7 +39,7 @@ class TireBase(BaseModel):
     position: str
     remaining_tread_mm: float = 0
     brand: str = ""
-    vehicle_id: int
+    vehicle_id: Optional[int] = None
     dot: str = ""
     design: str = ""
     dimension: str = ""
@@ -49,6 +49,7 @@ class TireBase(BaseModel):
     location: str = ""
     site: str = ""
     provider: str = ""
+    provider_id: Optional[int] = None
     target_pressure_psi: Optional[float] = None
     original_tread_mm: Optional[float] = None
     min_tread_mm: Optional[float] = None
@@ -78,6 +79,7 @@ class TireUpdate(BaseModel):
     location: Optional[str] = None
     site: Optional[str] = None
     provider: Optional[str] = None
+    provider_id: Optional[int] = None
     target_pressure_psi: Optional[float] = None
     original_tread_mm: Optional[float] = None
     min_tread_mm: Optional[float] = None
@@ -309,6 +311,78 @@ class TireMasterImportOut(BaseModel):
     errors: list[str]
     import_batch_id: str
     guidance: str
+
+
+class VehicleTireMountSyncItem(BaseModel):
+    position: str
+    code: str
+    tire_label: str = ""
+    life_code: str = "VN"
+    mount_date: Optional[date] = None
+    mount_mileage: Optional[float] = None
+    last_tread_date: Optional[date] = None
+    last_tread_km: Optional[float] = None
+    km_total: Optional[float] = None
+    km_in_vehicle: Optional[float] = None
+    tire_cost: Optional[float] = None
+    original_tread_mm: Optional[float] = None
+    effective_tread_mm: Optional[float] = None
+    lowest_tread_mm: Optional[float] = None
+    remaining_tread_mm: Optional[float] = None
+    tread_worn_mm: Optional[float] = None
+    km_per_mm_total: Optional[float] = None
+    cost_per_mm: Optional[float] = None
+    cpkm_proportional: Optional[float] = None
+    cpkm_real: Optional[float] = None
+    projected_km: Optional[float] = None
+    provider: str = ""
+
+    @field_validator("position", "code", mode="before")
+    @classmethod
+    def _required_text(cls, value):
+        return str(value or "").strip()
+
+
+class VehicleTireMountSyncRequest(BaseModel):
+    plate: str
+    mounted: list[VehicleTireMountSyncItem] = Field(default_factory=list)
+    source: str = "cloudfleet"
+    sync_batch_id: str = ""
+    clear_missing: bool = True
+
+    @field_validator("plate", mode="before")
+    @classmethod
+    def _normalize_plate(cls, value):
+        return str(value or "").strip().upper()
+
+
+class VehicleTireMountSyncOut(BaseModel):
+    plate: str
+    vehicle_id: int
+    created_tires: int = 0
+    updated_tires: int = 0
+    created_positions: int = 0
+    updated_positions: int = 0
+    cleared_positions: int = 0
+    moved_tires: int = 0
+    created_events: int = 0
+    updated_events: int = 0
+    linked_providers: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
+class RelationshipReconcileRequest(BaseModel):
+    apply: bool = False
+
+
+class RelationshipReconcileOut(BaseModel):
+    apply: bool
+    mounted_without_vehicle_or_position: int = 0
+    position_mismatches: int = 0
+    provider_text_without_provider_id: int = 0
+    fixed_positions: int = 0
+    fixed_provider_links: int = 0
+    warnings: list[str] = Field(default_factory=list)
 
 
 class TireLife360Out(BaseModel):

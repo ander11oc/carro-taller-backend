@@ -25,11 +25,22 @@ from app.api.routes_fleet import (
     get_vehicle_tire_map,
     import_providers_csv,
     import_vehicles_csv,
+    reconcile_tire_relationships,
     router,
+    sync_vehicle_tire_mounts,
 )
 from app.db.base import Base
 from app.models.entities import Provider, Tire, TireEvent, Vehicle, VehicleTirePosition
-from app.schemas.fleet import TireCatalogEntryCreate, TireInspectionCreate, TireMasterImportRequest, TireMasterPreviewRequest, TireMovementCreate
+from app.schemas.fleet import (
+    RelationshipReconcileRequest,
+    TireCatalogEntryCreate,
+    TireInspectionCreate,
+    TireMasterImportRequest,
+    TireMasterPreviewRequest,
+    TireMovementCreate,
+    VehicleTireMountSyncItem,
+    VehicleTireMountSyncRequest,
+)
 
 
 ADMIN = {
@@ -396,6 +407,324 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(automundial.provider_type, "Llantas")
         self.assertEqual(automundial.contact, "Michell Actualizada")
         self.assertEqual(automundial.city, "BOGOTA")
+
+    def test_vehicle_tire_mount_sync_creates_six_tires_positions_events_and_provider_links(self):
+        self.db.add(
+            Provider(
+                tenant_id="tenant_test",
+                name="Solistica",
+                normalized_name="SOLISTICA",
+                provider_type="Llantas",
+            )
+        )
+        vehicle = Vehicle(
+            tenant_id="tenant_test",
+            plate="JKV615",
+            brand="KENWORTH",
+            model="T460",
+            year=2020,
+            mileage=538643,
+        )
+        self.db.add(vehicle)
+        self.db.commit()
+
+        payload = VehicleTireMountSyncRequest(
+            plate="JKV615",
+            source="cloudfleet-test",
+            mounted=[
+                VehicleTireMountSyncItem(
+                    position=str(position),
+                    code=str(code),
+                    tire_label=label,
+                    life_code="VN",
+                    mount_date=date(2026, 3, 11),
+                    mount_mileage=529585 if position <= 2 else 459514,
+                    last_tread_date=date(2026, 3, 11),
+                    last_tread_km=529585 if position <= 2 else 459514,
+                    km_in_vehicle=9058,
+                    tire_cost=1700000 if position <= 2 else 1352000,
+                    original_tread_mm=17.5 if position <= 2 else 20,
+                    effective_tread_mm=14.5 if position <= 2 else 17,
+                    lowest_tread_mm=17.5 if position <= 2 else 20,
+                    provider="Solistica",
+                )
+                for position, code, label in [
+                    (1, 8819, "MICHELIN X INCITY Z 295/80R22.5"),
+                    (2, 8820, "MICHELIN X INCITY Z 295/80R22.5"),
+                    (3, 8264, "SUPERCARGO SC558 295/80R22.5"),
+                    (4, 8262, "SUPERCARGO SC558 295/80R22.5"),
+                    (5, 8263, "SUPERCARGO SC558 295/80R22.5"),
+                    (6, 8261, "SUPERCARGO SC558 295/80R22.5"),
+                ]
+            ],
+        )
+
+        result = sync_vehicle_tire_mounts(payload, self.db, ADMIN)
+
+        tires = self.db.query(Tire).filter(Tire.vehicle_id == vehicle.id).all()
+        positions = self.db.query(VehicleTirePosition).filter(
+            VehicleTirePosition.vehicle_id == vehicle.id
+        ).all()
+        events = self.db.query(TireEvent).filter(TireEvent.event_type == "mount_sync").all()
+        self.assertEqual(result.created_tires, 6)
+        self.assertEqual(result.created_events, 6)
+        self.assertEqual(len(tires), 6)
+        self.assertEqual({position.position_code for position in positions}, {"1", "2", "3", "4", "5", "6"})
+        self.assertEqual(len(events), 6)
+        self.assertTrue(all(tire.provider_id is not None for tire in tires))
+
+    def test_vehicle_tire_mount_sync_updates_existing_warehouse_tire(self):
+        vehicle = Vehicle(
+            tenant_id="tenant_test",
+            plate="JUY925",
+            brand="STARK",
+            model="E-CARGO",
+            year=2020,
+            mileage=61625,
+        )
+        existing = Tire(
+            tenant_id="tenant_test",
+            serial_number="7982",
+            vehicle_id=None,
+            position="N/A",
+            brand="LAUFEN",
+            status="warehouse",
+            remaining_tread_mm=0,
+        )
+        self.db.add_all([vehicle, existing])
+        self.db.commit()
+
+        result = sync_vehicle_tire_mounts(
+            VehicleTireMountSyncRequest(
+                plate="JUY925",
+                mounted=[
+                    VehicleTireMountSyncItem(
+                        position="2",
+                        code="7982",
+                        tire_label="LAUFEN LF21 215/75R17.5",
+                        life_code="VN",
+                        mount_date=date(2023, 10, 10),
+                        mount_mileage=31611,
+                        last_tread_km=60998,
+                        km_total=29387,
+                        km_in_vehicle=29387,
+                        tire_cost=950000,
+                        original_tread_mm=16,
+                        effective_tread_mm=13,
+                        lowest_tread_mm=9,
+                    )
+                ],
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        tire = self.db.query(Tire).filter(Tire.serial_number == "7982").one()
+        position = self.db.query(VehicleTirePosition).filter(
+            VehicleTirePosition.vehicle_id == vehicle.id,
+            VehicleTirePosition.position_code == "2",
+        ).one()
+        self.assertEqual(result.created_tires, 0)
+        self.assertEqual(result.updated_tires, 1)
+        self.assertEqual(tire.vehicle_id, vehicle.id)
+        self.assertEqual(tire.status, "mounted")
+        self.assertEqual(tire.position, "2")
+        self.assertEqual(tire.mount_mileage, 31611)
+        self.assertEqual(tire.remaining_tread_mm, 9)
+        self.assertEqual(position.tire_id, tire.id)
+
+    def test_vehicle_tire_mount_sync_is_idempotent_for_same_vehicle_snapshot(self):
+        vehicle = Vehicle(
+            tenant_id="tenant_test",
+            plate="JUY925",
+            brand="STARK",
+            model="E-CARGO",
+            year=2020,
+            mileage=61625,
+        )
+        self.db.add(vehicle)
+        self.db.commit()
+        payload = VehicleTireMountSyncRequest(
+            plate="JUY925",
+            mounted=[
+                VehicleTireMountSyncItem(
+                    position="1",
+                    code="7981",
+                    tire_label="LAUFEN LF21 215/75R17.5",
+                    mount_date=date(2024, 9, 6),
+                    mount_mileage=42854,
+                    last_tread_km=60998,
+                    lowest_tread_mm=9,
+                    tire_cost=1235000,
+                )
+            ],
+        )
+
+        first = sync_vehicle_tire_mounts(payload, self.db, ADMIN)
+        second = sync_vehicle_tire_mounts(payload, self.db, ADMIN)
+
+        events = self.db.query(TireEvent).filter(TireEvent.event_type == "mount_sync").all()
+        self.assertEqual(first.created_events, 1)
+        self.assertEqual(second.created_events, 0)
+        self.assertEqual(len(events), 1)
+
+    def test_vehicle_tire_mount_sync_moves_tire_from_previous_vehicle_with_history(self):
+        old_vehicle = Vehicle(
+            tenant_id="tenant_test",
+            plate="OLD001",
+            brand="OLD",
+            model="OLD",
+            year=2020,
+            mileage=0,
+        )
+        new_vehicle = Vehicle(
+            tenant_id="tenant_test",
+            plate="NEW001",
+            brand="NEW",
+            model="NEW",
+            year=2020,
+            mileage=0,
+        )
+        tire = Tire(
+            tenant_id="tenant_test",
+            serial_number="MOVE-1",
+            vehicle_id=None,
+            position="1",
+            brand="MICHELIN",
+            remaining_tread_mm=12,
+        )
+        self.db.add_all([old_vehicle, new_vehicle, tire])
+        self.db.commit()
+        tire.vehicle_id = old_vehicle.id
+        self.db.add(
+            VehicleTirePosition(
+                tenant_id="tenant_test",
+                vehicle_id=old_vehicle.id,
+                position_code="1",
+                tire_id=tire.id,
+            )
+        )
+        self.db.commit()
+
+        result = sync_vehicle_tire_mounts(
+            VehicleTireMountSyncRequest(
+                plate="NEW001",
+                mounted=[
+                    VehicleTireMountSyncItem(
+                        position="3",
+                        code="MOVE-1",
+                        tire_label="MICHELIN X MULTI 295/80R22.5",
+                        mount_date=date(2026, 6, 12),
+                        lowest_tread_mm=11,
+                    )
+                ],
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        old_position = self.db.query(VehicleTirePosition).filter(
+            VehicleTirePosition.vehicle_id == old_vehicle.id,
+            VehicleTirePosition.position_code == "1",
+        ).one()
+        tire = self.db.query(Tire).filter(Tire.serial_number == "MOVE-1").one()
+        transfer = self.db.query(TireEvent).filter(TireEvent.event_type == "dismount_sync").one()
+        self.assertEqual(result.moved_tires, 1)
+        self.assertIsNone(old_position.tire_id)
+        self.assertEqual(tire.vehicle_id, new_vehicle.id)
+        self.assertEqual(tire.position, "3")
+        self.assertEqual(transfer.vehicle_id, old_vehicle.id)
+
+    def test_vehicle_tire_mount_sync_clears_vehicle_positions_when_cloudfleet_has_no_mounts(self):
+        vehicle = Vehicle(
+            tenant_id="tenant_test",
+            plate="VACIO1",
+            brand="FORD",
+            model="RANGER",
+            year=2020,
+            mileage=0,
+        )
+        tire = Tire(
+            tenant_id="tenant_test",
+            serial_number="VAC-1",
+            vehicle_id=None,
+            position="1",
+            brand="MICHELIN",
+            status="mounted",
+            remaining_tread_mm=10,
+        )
+        self.db.add_all([vehicle, tire])
+        self.db.commit()
+        tire.vehicle_id = vehicle.id
+        self.db.add(
+            VehicleTirePosition(
+                tenant_id="tenant_test",
+                vehicle_id=vehicle.id,
+                position_code="1",
+                tire_id=tire.id,
+            )
+        )
+        self.db.commit()
+
+        result = sync_vehicle_tire_mounts(
+            VehicleTireMountSyncRequest(plate="VACIO1", mounted=[], clear_missing=True),
+            self.db,
+            ADMIN,
+        )
+
+        position = self.db.query(VehicleTirePosition).filter(
+            VehicleTirePosition.vehicle_id == vehicle.id,
+            VehicleTirePosition.position_code == "1",
+        ).one()
+        tire = self.db.query(Tire).filter(Tire.serial_number == "VAC-1").one()
+        self.assertEqual(result.cleared_positions, 1)
+        self.assertIsNone(position.tire_id)
+        self.assertIsNone(tire.vehicle_id)
+        self.assertEqual(tire.status, "warehouse")
+
+    def test_reconcile_tire_relationships_links_provider_and_repairs_position_mismatch(self):
+        provider = Provider(
+            tenant_id="tenant_test",
+            name="AUTOMUNDIAL SA",
+            normalized_name="AUTOMUNDIAL SA",
+            provider_type="Llantas",
+        )
+        tire = Tire(
+            tenant_id="tenant_test",
+            serial_number="REC-1",
+            vehicle_id=self.vehicle.id,
+            position="P5",
+            brand="MICHELIN",
+            provider="Automundial SA",
+            remaining_tread_mm=10,
+        )
+        self.db.add_all([provider, tire])
+        self.db.commit()
+        self.db.add(
+            VehicleTirePosition(
+                tenant_id="tenant_test",
+                vehicle_id=self.vehicle.id,
+                position_code="P5",
+                tire_id=None,
+            )
+        )
+        self.db.commit()
+
+        result = reconcile_tire_relationships(
+            RelationshipReconcileRequest(apply=True),
+            self.db,
+            ADMIN,
+        )
+
+        position = self.db.query(VehicleTirePosition).filter(
+            VehicleTirePosition.vehicle_id == self.vehicle.id,
+            VehicleTirePosition.position_code == "P5",
+        ).one()
+        tire = self.db.query(Tire).filter(Tire.serial_number == "REC-1").one()
+        self.assertGreaterEqual(result.fixed_provider_links, 1)
+        self.assertGreaterEqual(result.fixed_positions, 1)
+        self.assertEqual(tire.provider_id, provider.id)
+        self.assertEqual(position.tire_id, tire.id)
 
     def test_master_preview_detects_incomplete_rows_duplicates_and_missing_catalogs(self):
         preview = preview_tire_master_import(

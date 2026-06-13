@@ -54,6 +54,10 @@ from app.schemas.fleet import (
     TireMasterImportOut,
     TireMasterPreviewRequest,
     TireMasterPreviewOut,
+    VehicleTireMountSyncRequest,
+    VehicleTireMountSyncOut,
+    RelationshipReconcileRequest,
+    RelationshipReconcileOut,
     TireOperationalReportsOut,
     TireRecommendationOut,
     VehicleTirePositionCreate,
@@ -578,6 +582,393 @@ def _provider_from_row(row: dict, source_sheet: str, source_row: int) -> dict[st
         "source_sheet": source_sheet,
         "source_row": source_row,
     }
+
+
+def _find_provider_by_name(db: Session, user, provider_name: str) -> Provider | None:
+    normalized = _normalize_provider_name(provider_name)
+    if not normalized:
+        return None
+    return (
+        db.query(Provider)
+        .filter(
+            _scope(Provider, user),
+            Provider.normalized_name == normalized,
+            Provider.is_active.is_(True),
+        )
+        .first()
+    )
+
+
+def _mount_sync_remaining_tread(item) -> float:
+    for value in (item.lowest_tread_mm, item.remaining_tread_mm, item.effective_tread_mm):
+        if value is not None:
+            return float(value)
+    return 0.0
+
+
+def _mount_sync_event_date(item) -> date:
+    return item.mount_date or item.last_tread_date or date.today()
+
+
+def _ensure_dismount_sync_event(
+    db: Session,
+    user,
+    tire: Tire,
+    vehicle_id: int | None,
+    position_code: str,
+    reason: str,
+) -> bool:
+    if vehicle_id is None:
+        return False
+    existing = (
+        db.query(TireEvent)
+        .filter(
+            _scope(TireEvent, user),
+            TireEvent.tire_id == tire.id,
+            TireEvent.vehicle_id == vehicle_id,
+            TireEvent.position == position_code,
+            TireEvent.event_type == "dismount_sync",
+            TireEvent.novelty == reason,
+        )
+        .first()
+    )
+    if existing:
+        return False
+    db.add(
+        TireEvent(
+            tenant_id=user["tenant_id"],
+            tire_id=tire.id,
+            vehicle_id=vehicle_id,
+            event_type="dismount_sync",
+            event_date=date.today(),
+            position=position_code,
+            mileage=tire.mount_mileage,
+            min_tread_mm=tire.remaining_tread_mm,
+            provider=tire.provider,
+            provider_id=tire.provider_id,
+            cost=tire.initial_cost,
+            novelty=reason,
+            guidance="Salida generada por sincronizacion CloudFleet.",
+            created_by=user["email"],
+            created_role=user.get("role", "viewer"),
+        )
+    )
+    return True
+
+
+def _sync_mount_event(
+    db: Session,
+    user,
+    vehicle: Vehicle,
+    tire: Tire,
+    item,
+    source: str,
+    batch_id: str,
+) -> str:
+    event_date = _mount_sync_event_date(item)
+    novelty = f"Sincronizado desde {source}."
+    existing = (
+        db.query(TireEvent)
+        .filter(
+            _scope(TireEvent, user),
+            TireEvent.tire_id == tire.id,
+            TireEvent.vehicle_id == vehicle.id,
+            TireEvent.position == item.position,
+            TireEvent.event_type == "mount_sync",
+            TireEvent.event_date == event_date,
+            TireEvent.mileage == item.mount_mileage,
+        )
+        .first()
+    )
+    if existing:
+        existing.min_tread_mm = tire.remaining_tread_mm
+        existing.tread_outer_mm = tire.remaining_tread_mm
+        existing.tread_center_mm = tire.remaining_tread_mm
+        existing.tread_inner_mm = tire.remaining_tread_mm
+        existing.provider = tire.provider
+        existing.provider_id = tire.provider_id
+        existing.cost = tire.initial_cost
+        existing.novelty = f"{novelty} Batch {batch_id}." if batch_id else novelty
+        return "updated"
+    db.add(
+        TireEvent(
+            tenant_id=user["tenant_id"],
+            tire_id=tire.id,
+            vehicle_id=vehicle.id,
+            event_type="mount_sync",
+            event_date=event_date,
+            position=item.position,
+            mileage=item.mount_mileage,
+            min_tread_mm=tire.remaining_tread_mm,
+            tread_outer_mm=tire.remaining_tread_mm,
+            tread_center_mm=tire.remaining_tread_mm,
+            tread_inner_mm=tire.remaining_tread_mm,
+            provider=tire.provider,
+            provider_id=tire.provider_id,
+            cost=tire.initial_cost,
+            novelty=f"{novelty} Batch {batch_id}." if batch_id else novelty,
+            guidance=f"Montaje actual confirmado en {vehicle.plate} posicion {item.position}.",
+            created_by=user["email"],
+            created_role=user.get("role", "viewer"),
+        )
+    )
+    return "created"
+
+
+@router.post("/vehicle-tire-mounts/sync", response_model=VehicleTireMountSyncOut)
+def sync_vehicle_tire_mounts(
+    payload: VehicleTireMountSyncRequest,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "update")
+    if not payload.plate:
+        raise HTTPException(status_code=400, detail="La placa es obligatoria.")
+    vehicle = (
+        db.query(Vehicle)
+        .filter(_scope(Vehicle, user), func.upper(Vehicle.plate) == payload.plate.upper())
+        .first()
+    )
+    if not vehicle:
+        raise HTTPException(status_code=404, detail=f"Vehiculo {payload.plate} no existe.")
+
+    result = VehicleTireMountSyncOut(plate=vehicle.plate, vehicle_id=vehicle.id)
+    batch_id = payload.sync_batch_id or f"cloudfleet-{uuid4().hex[:10]}"
+    incoming_positions: set[str] = set()
+
+    for item in payload.mounted:
+        serial = _normalize_serial(item.code)
+        position_code = item.position.strip().upper()
+        if not serial or not position_code:
+            result.errors.append(f"Fila omitida: codigo/posicion incompleta para {payload.plate}.")
+            continue
+        incoming_positions.add(position_code)
+
+        parsed = _parse_tire_label(item.tire_label)
+        provider = _find_provider_by_name(db, user, item.provider)
+        if provider:
+            result.linked_providers += 1
+
+        tire = _find_tire_by_serial(db, user, serial)
+        if tire and tire.vehicle_id and tire.vehicle_id != vehicle.id:
+            old_position = tire.position or ""
+            old_position_row = (
+                db.query(VehicleTirePosition)
+                .filter(
+                    _scope(VehicleTirePosition, user),
+                    VehicleTirePosition.vehicle_id == tire.vehicle_id,
+                    VehicleTirePosition.tire_id == tire.id,
+                )
+                .first()
+            )
+            if old_position_row:
+                old_position = old_position_row.position_code
+                old_position_row.tire_id = None
+            if _ensure_dismount_sync_event(
+                db,
+                user,
+                tire,
+                tire.vehicle_id,
+                old_position,
+                f"Salida por reasignacion CloudFleet hacia {vehicle.plate} posicion {position_code}.",
+            ):
+                result.created_events += 1
+            result.moved_tires += 1
+
+        existing_position = (
+            db.query(VehicleTirePosition)
+            .filter(
+                _scope(VehicleTirePosition, user),
+                VehicleTirePosition.vehicle_id == vehicle.id,
+                VehicleTirePosition.position_code == position_code,
+            )
+            .first()
+        )
+        if existing_position and existing_position.tire_id and (not tire or existing_position.tire_id != tire.id):
+            previous_tire = (
+                db.query(Tire)
+                .filter(_scope(Tire, user), Tire.id == existing_position.tire_id)
+                .first()
+            )
+            if previous_tire:
+                if _ensure_dismount_sync_event(
+                    db,
+                    user,
+                    previous_tire,
+                    vehicle.id,
+                    position_code,
+                    f"Salida por reemplazo CloudFleet en {vehicle.plate} posicion {position_code}.",
+                ):
+                    result.created_events += 1
+                previous_tire.vehicle_id = None
+                previous_tire.position = "N/A"
+                previous_tire.status = "warehouse"
+
+        values = {
+            "brand": parsed["brand"],
+            "design": parsed["design"],
+            "dimension": parsed["dimension"],
+            "life_cycle": item.life_code or "VN",
+            "position": position_code,
+            "remaining_tread_mm": _mount_sync_remaining_tread(item),
+            "vehicle_id": vehicle.id,
+            "status": "mounted",
+            "location": f"Montada\nVehiculo: {vehicle.plate}\nPosicion: {position_code}",
+            "provider": item.provider,
+            "provider_id": provider.id if provider else None,
+            "original_tread_mm": item.original_tread_mm or _default_original_tread(parsed["dimension"]),
+            "min_tread_mm": item.lowest_tread_mm,
+            "initial_cost": item.tire_cost,
+            "mount_mileage": item.mount_mileage,
+            "tread_at_mount_mm": item.effective_tread_mm or item.original_tread_mm,
+            "total_km_all_lives": item.km_total,
+            "source_sheet": payload.source,
+            "import_batch_id": batch_id,
+        }
+        if tire:
+            tire.serial_number = serial
+            for key, value in values.items():
+                if value is not None or key in {"provider_id", "vehicle_id"}:
+                    setattr(tire, key, value)
+            result.updated_tires += 1
+        else:
+            tire = Tire(tenant_id=user["tenant_id"], serial_number=serial, **values)
+            db.add(tire)
+            db.flush()
+            result.created_tires += 1
+
+        if existing_position:
+            if existing_position.tire_id != tire.id:
+                result.updated_positions += 1
+            existing_position.tire_id = tire.id
+            existing_position.min_tread_mm = existing_position.min_tread_mm or tire.min_tread_mm
+        else:
+            db.add(
+                VehicleTirePosition(
+                    tenant_id=user["tenant_id"],
+                    vehicle_id=vehicle.id,
+                    position_code=position_code,
+                    tire_id=tire.id,
+                    min_tread_mm=tire.min_tread_mm,
+                )
+            )
+            result.created_positions += 1
+
+        event_state = _sync_mount_event(db, user, vehicle, tire, item, payload.source, batch_id)
+        if event_state == "created":
+            result.created_events += 1
+        else:
+            result.updated_events += 1
+
+    if payload.clear_missing:
+        current_positions = (
+            db.query(VehicleTirePosition)
+            .filter(_scope(VehicleTirePosition, user), VehicleTirePosition.vehicle_id == vehicle.id)
+            .all()
+        )
+        for position in current_positions:
+            if position.position_code in incoming_positions or not position.tire_id:
+                continue
+            tire = db.query(Tire).filter(_scope(Tire, user), Tire.id == position.tire_id).first()
+            if tire:
+                if _ensure_dismount_sync_event(
+                    db,
+                    user,
+                    tire,
+                    vehicle.id,
+                    position.position_code,
+                    f"Salida porque CloudFleet no reporta montaje activo en {vehicle.plate} posicion {position.position_code}.",
+                ):
+                    result.created_events += 1
+                if tire.vehicle_id == vehicle.id:
+                    tire.vehicle_id = None
+                    tire.position = "N/A"
+                    tire.status = "warehouse"
+            position.tire_id = None
+            result.cleared_positions += 1
+
+    db.commit()
+    _write_audit_log(
+        db,
+        user,
+        "tires",
+        "cloudfleet-sync",
+        vehicle.id,
+        f"{vehicle.plate}: {len(payload.mounted)} montajes, {result.created_tires} creadas, {result.updated_tires} actualizadas",
+    )
+    return result
+
+
+@router.post("/vehicle-tire-mounts/reconcile", response_model=RelationshipReconcileOut)
+def reconcile_tire_relationships(
+    payload: RelationshipReconcileRequest,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "update" if payload.apply else "read")
+    result = RelationshipReconcileOut(apply=payload.apply)
+    mounted_tires = (
+        db.query(Tire)
+        .filter(_scope(Tire, user), Tire.status == "mounted")
+        .all()
+    )
+    for tire in mounted_tires:
+        has_vehicle_position = tire.vehicle_id is not None and bool((tire.position or "").strip())
+        if not has_vehicle_position:
+            result.mounted_without_vehicle_or_position += 1
+            result.warnings.append(f"Llanta {tire.serial_number} montada sin vehiculo/posicion.")
+            continue
+        position = (
+            db.query(VehicleTirePosition)
+            .filter(
+                _scope(VehicleTirePosition, user),
+                VehicleTirePosition.vehicle_id == tire.vehicle_id,
+                VehicleTirePosition.position_code == tire.position,
+            )
+            .first()
+        )
+        if not position or position.tire_id != tire.id:
+            result.position_mismatches += 1
+            if payload.apply:
+                if position:
+                    position.tire_id = tire.id
+                else:
+                    db.add(
+                        VehicleTirePosition(
+                            tenant_id=user["tenant_id"],
+                            vehicle_id=tire.vehicle_id,
+                            position_code=tire.position,
+                            tire_id=tire.id,
+                            min_tread_mm=tire.min_tread_mm,
+                        )
+                    )
+                result.fixed_positions += 1
+        provider = _find_provider_by_name(db, user, tire.provider)
+        if tire.provider and not tire.provider_id and provider:
+            result.provider_text_without_provider_id += 1
+            if payload.apply:
+                tire.provider_id = provider.id
+                result.fixed_provider_links += 1
+
+    if payload.apply:
+        db.commit()
+        _write_audit_log(
+            db,
+            user,
+            "tires",
+            "relationship-reconcile",
+            None,
+            f"{result.fixed_positions} posiciones, {result.fixed_provider_links} proveedores",
+        )
+    return result
+
+
+@router.get("/vehicle-tire-mounts/diagnostics", response_model=RelationshipReconcileOut)
+def diagnose_tire_relationships(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return reconcile_tire_relationships(RelationshipReconcileRequest(apply=False), db, user)
 
 
 # =====================================================

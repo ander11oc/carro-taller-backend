@@ -28,6 +28,10 @@ STRING_DEFAULTS = {
     "alignment_type": "",
 }
 
+RELAX_NULLABLE_COLUMNS = {
+    "tires": {"vehicle_id"},
+}
+
 
 
 def _sql_literal(value: str) -> str:
@@ -69,3 +73,9 @@ def ensure_model_columns(engine: Engine) -> None:
                     connection.execute(
                         text(_backfill_sql(table_name, column.name, STRING_DEFAULTS[column.name]))
                     )
+            if engine.dialect.name == "postgresql":
+                for column_name in RELAX_NULLABLE_COLUMNS.get(table_name, set()):
+                    if column_name in existing_columns:
+                        connection.execute(
+                            text(f"ALTER TABLE {table_name} ALTER COLUMN {column_name} DROP NOT NULL")
+                        )
