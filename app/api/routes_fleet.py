@@ -3712,6 +3712,20 @@ def rotate_vehicle_tires(
         raise HTTPException(status_code=400, detail="Selecciona posiciones origen y destino diferentes.")
     provider_name = payload.provider.strip()
     provider_obj = _find_provider_by_name(db, user, provider_name)
+    tread_values = [
+        payload.tread_inner_mm,
+        payload.tread_center_mm,
+        payload.tread_center_outer_mm,
+        payload.tread_outer_mm,
+    ]
+    supplied_treads = [value for value in tread_values if value is not None]
+    min_tread = None
+    if supplied_treads:
+        if len(supplied_treads) != 4 or any(value <= 0 for value in supplied_treads):
+            raise HTTPException(status_code=400, detail="Diligencia las cuatro profundidades con valores mayores a cero.")
+        min_tread = min(supplied_treads)
+    if payload.pressure_psi is not None and payload.pressure_psi <= 0:
+        raise HTTPException(status_code=400, detail="La presion debe ser mayor a cero.")
 
     from_tire = (
         db.query(Tire)
@@ -3755,6 +3769,8 @@ def rotate_vehicle_tires(
 
     from_tire.position = to_position
     to_tire.position = from_position
+    if min_tread is not None:
+        from_tire.remaining_tread_mm = min_tread
     from_position_obj.tire_id = to_tire.id
     to_position_obj.tire_id = from_tire.id
 
@@ -3771,6 +3787,12 @@ def rotate_vehicle_tires(
         provider=provider_name,
         provider_id=provider_obj.id if provider_obj else None,
         cost=payload.cost,
+        pressure_psi=payload.pressure_psi,
+        tread_inner_mm=payload.tread_inner_mm,
+        tread_center_mm=payload.tread_center_mm,
+        tread_center_outer_mm=payload.tread_center_outer_mm,
+        tread_outer_mm=payload.tread_outer_mm,
+        min_tread_mm=min_tread,
         novelty=payload.observation or f"Rotacion {from_position} -> {to_position}.",
         guidance=f"Rotacion registrada en {vehicle.plate}: {from_position} <-> {to_position}.",
         created_by=user["email"],

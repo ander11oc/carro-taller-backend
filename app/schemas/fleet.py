@@ -919,6 +919,11 @@ class RotateVehicleTiresPayload(BaseModel):
     provider: str = ""
     cost: Optional[float] = None
     observation: str = ""
+    tread_inner_mm: Optional[float] = None
+    tread_center_mm: Optional[float] = None
+    tread_center_outer_mm: Optional[float] = None
+    tread_outer_mm: Optional[float] = None
+    pressure_psi: Optional[float] = None
 
 
 class DismountBatchResult(BaseModel):

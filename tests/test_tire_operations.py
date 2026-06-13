@@ -394,6 +394,54 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(pos1.tire_id, self.tire.id)
         self.assertEqual(pos3.tire_id, other.id)
 
+    def test_rotate_vehicle_tires_records_tread_and_pressure_for_moved_tire(self):
+        other = Tire(
+            tenant_id="tenant_test",
+            serial_number="8230",
+            vehicle_id=self.vehicle.id,
+            position="P1",
+            brand="Goodyear",
+            remaining_tread_mm=13,
+            status="mounted",
+        )
+        self.db.add(other)
+        self.db.commit()
+        self.db.refresh(other)
+        pos1 = self.db.query(VehicleTirePosition).filter(VehicleTirePosition.position_code == "P1").one()
+        pos1.tire_id = other.id
+        self.db.commit()
+
+        event = rotate_vehicle_tires(
+            self.vehicle.id,
+            RotateVehicleTiresPayload(
+                from_position="P3",
+                to_position="P1",
+                rotation_date=date(2026, 6, 14),
+                mileage=10900,
+                provider="Taller Rotacion",
+                cost=50000,
+                observation="Rotacion con medicion",
+                tread_inner_mm=14,
+                tread_center_mm=13.5,
+                tread_center_outer_mm=12.75,
+                tread_outer_mm=15,
+                pressure_psi=100,
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        self.db.refresh(self.tire)
+        stored_event = self.db.query(TireEvent).filter(TireEvent.id == event.id).one()
+        self.assertEqual(self.tire.position, "P1")
+        self.assertEqual(self.tire.remaining_tread_mm, 12.75)
+        self.assertEqual(stored_event.pressure_psi, 100)
+        self.assertEqual(stored_event.tread_inner_mm, 14)
+        self.assertEqual(stored_event.tread_center_mm, 13.5)
+        self.assertEqual(stored_event.tread_center_outer_mm, 12.75)
+        self.assertEqual(stored_event.tread_outer_mm, 15)
+        self.assertEqual(stored_event.min_tread_mm, 12.75)
+
     def test_alignment_records_selected_positions(self):
         event = create_alignment(
             self.vehicle.id,
