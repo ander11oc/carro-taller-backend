@@ -1422,7 +1422,7 @@ def import_tire_master_rows(
                     event_type="master_import",
                     event_date=tire.purchase_date or date.today(),
                     position=position_code,
-                    mileage=_row_float(row, "km desde montaje", "km desde", "km_desde_montaje"),
+                    mileage=_row_float(row, "medicion montaje", "medición montaje", "km desde montaje", "km desde", "km_desde_montaje"),
                     min_tread_mm=remaining_tread,
                     tread_outer_mm=remaining_tread,
                     tread_center_mm=remaining_tread,
