@@ -15,6 +15,7 @@ from app.api.routes_fleet import (
     create_tire_disposal_event,
     create_tire_retread_event,
     create_tire_warranty_event,
+    create_alignment,
     get_tire_cost_summary,
     get_tire_decision_motor,
     get_tire_life_360,
@@ -25,14 +26,21 @@ from app.api.routes_fleet import (
     get_vehicle_tire_map,
     import_providers_csv,
     import_vehicles_csv,
+    mount_tire_to_vehicle,
     reconcile_tire_relationships,
+    rotate_vehicle_tires,
     router,
     sync_vehicle_tire_mounts,
+    update_tire_inspection,
 )
 from app.db.base import Base
 from app.models.entities import Provider, Tire, TireEvent, Vehicle, VehicleTirePosition
 from app.schemas.fleet import (
     RelationshipReconcileRequest,
+    AlignmentPayload,
+    InspectionUpdatePayload,
+    MountTirePayload,
+    RotateVehicleTiresPayload,
     TireCatalogEntryCreate,
     TireInspectionCreate,
     TireMasterImportRequest,
@@ -132,6 +140,213 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(result.guidance, "Presion por debajo del objetivo. Calibrar y revisar en la proxima inspeccion.")
         self.assertEqual(self.db.query(TireEvent).count(), 1)
         self.assertEqual(self.db.query(Tire).one().remaining_tread_mm, 10)
+
+    def test_inspection_uses_four_tread_measurements_and_can_be_corrected_without_duplicate(self):
+        payload = TireInspectionCreate(
+            tire_id=self.tire.id,
+            vehicle_id=self.vehicle.id,
+            position="P3",
+            event_date=date(2026, 6, 9),
+            mileage=10600,
+            pressure_psi=92,
+            tread_outer_mm=11,
+            tread_center_mm=10.5,
+            tread_center_outer_mm=7.25,
+            tread_inner_mm=10,
+            novelty="Medicion con centro exterior bajo",
+        )
+
+        created = create_tire_inspection(payload, self.db, ADMIN)
+        created_min_tread = created.min_tread_mm
+        corrected = update_tire_inspection(
+            created.id,
+            InspectionUpdatePayload(
+                event_date=date(2026, 6, 9),
+                position="P3",
+                mileage=10610,
+                pressure_psi=94,
+                tread_outer_mm=11,
+                tread_center_mm=10.5,
+                tread_center_outer_mm=8,
+                tread_inner_mm=10,
+                novelty="Correccion de lectura",
+                justification="Error de digitacion en centro exterior",
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        tire = self.db.query(Tire).filter(Tire.id == self.tire.id).one()
+        events = self.db.query(TireEvent).filter(TireEvent.event_type == "inspection").all()
+        self.assertEqual(created_min_tread, 7.25)
+        self.assertEqual(corrected.min_tread_mm, 8)
+        self.assertEqual(getattr(events[0], "tread_center_outer_mm"), 8)
+        self.assertEqual(tire.remaining_tread_mm, 8)
+        self.assertEqual(len(events), 1)
+
+    def test_inspection_update_requires_justification(self):
+        created = create_tire_inspection(
+            TireInspectionCreate(
+                tire_id=self.tire.id,
+                vehicle_id=self.vehicle.id,
+                position="P3",
+                event_date=date(2026, 6, 9),
+                mileage=10600,
+                pressure_psi=92,
+                tread_outer_mm=11,
+                tread_center_mm=10.5,
+                tread_center_outer_mm=10,
+                tread_inner_mm=10,
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        with self.assertRaises(HTTPException) as err:
+            update_tire_inspection(
+                created.id,
+                InspectionUpdatePayload(
+                    event_date=date(2026, 6, 10),
+                    position="P3",
+                    tread_outer_mm=10,
+                    tread_center_mm=10,
+                    tread_center_outer_mm=10,
+                    tread_inner_mm=10,
+                    justification="",
+                ),
+                self.db,
+                ADMIN,
+            )
+
+        self.assertEqual(err.exception.status_code, 400)
+        self.assertIn("justificacion", err.exception.detail.lower())
+
+    def test_mount_tire_replace_existing_dismounts_previous_tire(self):
+        new_tire = Tire(
+            tenant_id="tenant_test",
+            serial_number="NEW-900",
+            position="",
+            brand="Michelin",
+            remaining_tread_mm=18,
+            status="warehouse",
+            location="Bodega principal",
+        )
+        self.db.add(new_tire)
+        self.db.commit()
+        self.db.refresh(new_tire)
+
+        event = mount_tire_to_vehicle(
+            self.vehicle.id,
+            MountTirePayload(
+                tire_id=new_tire.id,
+                position="P3",
+                mount_date=date(2026, 6, 14),
+                mount_mileage=10800,
+                tread_at_mount_mm=18,
+                provider="Proveedor Montaje",
+                replace_existing=True,
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        old_tire = self.db.query(Tire).filter(Tire.id == self.tire.id).one()
+        position = self.db.query(VehicleTirePosition).filter(VehicleTirePosition.position_code == "P3").one()
+        dismount_event = self.db.query(TireEvent).filter(TireEvent.event_type == "dismount").one()
+        self.assertEqual(event.event_type, "mount")
+        self.assertEqual(old_tire.status, "warehouse")
+        self.assertIsNone(old_tire.vehicle_id)
+        self.assertEqual(position.tire_id, new_tire.id)
+        self.assertEqual(dismount_event.tire_id, self.tire.id)
+
+    def test_mount_tire_rejects_occupied_position_without_replace_flag(self):
+        new_tire = Tire(
+            tenant_id="tenant_test",
+            serial_number="NEW-901",
+            position="",
+            brand="Michelin",
+            remaining_tread_mm=18,
+            status="warehouse",
+        )
+        self.db.add(new_tire)
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as err:
+            mount_tire_to_vehicle(
+                self.vehicle.id,
+                MountTirePayload(
+                    tire_id=new_tire.id,
+                    position="P3",
+                    mount_date=date(2026, 6, 14),
+                    replace_existing=False,
+                ),
+                self.db,
+                ADMIN,
+            )
+
+        self.assertEqual(err.exception.status_code, 409)
+
+    def test_rotate_vehicle_tires_swaps_positions_and_records_event(self):
+        other = Tire(
+            tenant_id="tenant_test",
+            serial_number="8230",
+            vehicle_id=self.vehicle.id,
+            position="P1",
+            brand="Goodyear",
+            remaining_tread_mm=13,
+            status="mounted",
+        )
+        self.db.add(other)
+        pos1 = self.db.query(VehicleTirePosition).filter(VehicleTirePosition.position_code == "P1").one()
+        pos1.tire_id = other.id
+        self.db.commit()
+        self.db.refresh(other)
+
+        event = rotate_vehicle_tires(
+            self.vehicle.id,
+            RotateVehicleTiresPayload(
+                from_position="P3",
+                to_position="P1",
+                rotation_date=date(2026, 6, 14),
+                mileage=10900,
+                provider="Taller Rotacion",
+                cost=50000,
+                observation="Rotacion preventiva",
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        self.db.refresh(self.tire)
+        self.db.refresh(other)
+        pos1 = self.db.query(VehicleTirePosition).filter(VehicleTirePosition.position_code == "P1").one()
+        pos3 = self.db.query(VehicleTirePosition).filter(VehicleTirePosition.position_code == "P3").one()
+        self.assertEqual(event.event_type, "rotation")
+        self.assertEqual(self.tire.position, "P1")
+        self.assertEqual(other.position, "P3")
+        self.assertEqual(pos1.tire_id, self.tire.id)
+        self.assertEqual(pos3.tire_id, other.id)
+
+    def test_alignment_records_selected_positions(self):
+        event = create_alignment(
+            self.vehicle.id,
+            AlignmentPayload(
+                alignment_date=date(2026, 6, 14),
+                mileage=10900,
+                provider="Alineaciones Norte",
+                cost=120000,
+                alignment_type="direccion",
+                positions=["P1", "P3"],
+                observation="Alineacion eje delantero",
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        stored = self.db.query(TireEvent).filter(TireEvent.id == event.id).one()
+        self.assertEqual(event.event_type, "alignment")
+        self.assertEqual(stored.position, "P1,P3")
+        self.assertEqual(stored.provider, "Alineaciones Norte")
 
     def test_inspection_rejects_tread_growth_without_explanation(self):
         first = TireInspectionCreate(

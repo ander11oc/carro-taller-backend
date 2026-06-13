@@ -45,6 +45,7 @@ from app.schemas.fleet import (
     ProviderOut,
     ProviderImportResultOut,
     TireInspectionCreate,
+    InspectionUpdatePayload,
     TireMovementCreate,
     TireEventOut,
     TireCostSummaryOut,
@@ -98,6 +99,7 @@ from app.schemas.fleet import (
     MountTirePayload,
     DismountBatchPayload,
     AlignmentPayload,
+    RotateVehicleTiresPayload,
     DismountBatchResult,
 )
 from app.api.permissions import require_module_action
@@ -413,7 +415,20 @@ def _tire_master_values(row: dict) -> dict[str, str | float | None]:
 
 
 def _inspection_min_tread(payload: TireInspectionCreate) -> float:
-    return min(payload.tread_outer_mm, payload.tread_center_mm, payload.tread_inner_mm)
+    values = [payload.tread_outer_mm, payload.tread_center_mm, payload.tread_inner_mm]
+    if payload.tread_center_outer_mm is not None:
+        values.append(payload.tread_center_outer_mm)
+    return min(values)
+
+
+def _min_tread_from_values(
+    tread_outer_mm: float | None,
+    tread_center_mm: float | None,
+    tread_center_outer_mm: float | None,
+    tread_inner_mm: float | None,
+) -> float:
+    values = [v for v in (tread_outer_mm, tread_center_mm, tread_center_outer_mm, tread_inner_mm) if v is not None]
+    return min(values) if values else 0.0
 
 
 def _latest_tire_event(db: Session, tenant_id: str, tire_id: int) -> TireEvent | None:
@@ -466,6 +481,7 @@ def _event_payload(event: TireEvent) -> dict[str, str | int | float | bool | Non
         "pressure_psi": event.pressure_psi,
         "tread_outer_mm": event.tread_outer_mm,
         "tread_center_mm": event.tread_center_mm,
+        "tread_center_outer_mm": event.tread_center_outer_mm,
         "tread_inner_mm": event.tread_inner_mm,
         "min_tread_mm": event.min_tread_mm,
         "damage": event.damage,
@@ -1995,6 +2011,7 @@ def create_tire_inspection(
         tread_outer_mm=payload.tread_outer_mm,
         tread_center_mm=payload.tread_center_mm,
         tread_inner_mm=payload.tread_inner_mm,
+        tread_center_outer_mm=payload.tread_center_outer_mm,
         min_tread_mm=min_tread,
         damage=payload.damage,
         novelty=payload.novelty,
@@ -2011,6 +2028,62 @@ def create_tire_inspection(
     db.commit()
     db.refresh(event)
     _write_audit_log(db, user, "tires", "inspection", event.id, f"{tire.serial_number}:{guidance}")
+    return event
+
+
+@router.put("/tires/events/{event_id}/inspection", response_model=TireEventOut)
+def update_tire_inspection(
+    event_id: int,
+    payload: InspectionUpdatePayload,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "update")
+    if not payload.justification.strip():
+        raise HTTPException(status_code=400, detail="La justificacion es obligatoria para modificar inspecciones.")
+    event = _get_or_404(db, TireEvent, event_id, user)
+    if event.event_type != "inspection":
+        raise HTTPException(status_code=400, detail="El evento indicado no es una inspeccion.")
+    tire = _get_or_404(db, Tire, event.tire_id, user) if event.tire_id else None
+    if payload.pressure_psi is not None and payload.pressure_psi <= 0:
+        raise HTTPException(status_code=400, detail="La presion y las profundidades deben ser mayores que cero.")
+    tread_values = [
+        payload.tread_outer_mm,
+        payload.tread_center_mm,
+        payload.tread_center_outer_mm,
+        payload.tread_inner_mm,
+    ]
+    if any(value is not None and value <= 0 for value in tread_values):
+        raise HTTPException(status_code=400, detail="La presion y las profundidades deben ser mayores que cero.")
+
+    event.event_date = payload.event_date or event.event_date
+    if payload.position is not None:
+        event.position = payload.position
+    event.mileage = payload.mileage
+    event.pressure_psi = payload.pressure_psi
+    event.tread_outer_mm = payload.tread_outer_mm
+    event.tread_center_mm = payload.tread_center_mm
+    event.tread_center_outer_mm = payload.tread_center_outer_mm
+    event.tread_inner_mm = payload.tread_inner_mm
+    event.min_tread_mm = _min_tread_from_values(
+        payload.tread_outer_mm,
+        payload.tread_center_mm,
+        payload.tread_center_outer_mm,
+        payload.tread_inner_mm,
+    )
+    event.damage = payload.damage
+    event.novelty = payload.novelty
+    event.evidence_url = payload.evidence_url
+    event.justification = payload.justification
+    if tire:
+        tire.remaining_tread_mm = event.min_tread_mm or tire.remaining_tread_mm
+        if event.vehicle_id is not None:
+            tire.vehicle_id = event.vehicle_id
+        if event.position:
+            tire.position = event.position
+    db.commit()
+    db.refresh(event)
+    _write_audit_log(db, user, "tires", "inspection-update", event.id, payload.justification)
     return event
 
 
@@ -3401,13 +3474,6 @@ def mount_tire_to_vehicle(
     if not payload.tire_id:
         raise HTTPException(status_code=400, detail="tire_id requerido para montaje.")
     tire = _get_or_404(db, Tire, payload.tire_id, user)
-    tire.vehicle_id = vehicle_id
-    tire.position = payload.position
-    tire.status = "mounted"
-    if payload.mount_mileage is not None:
-        tire.mount_mileage = payload.mount_mileage
-    if payload.tread_at_mount_mm is not None:
-        tire.tread_at_mount_mm = payload.tread_at_mount_mm
     position_obj = (
         db.query(VehicleTirePosition)
         .filter(
@@ -3417,6 +3483,70 @@ def mount_tire_to_vehicle(
         )
         .first()
     )
+    occupied_tire = None
+    if position_obj and position_obj.tire_id and position_obj.tire_id != tire.id:
+        occupied_tire = (
+            db.query(Tire)
+            .filter(_scope(Tire, user), Tire.id == position_obj.tire_id)
+            .first()
+        )
+    if occupied_tire is None:
+        occupied_tire = (
+            db.query(Tire)
+            .filter(
+                _scope(Tire, user),
+                Tire.vehicle_id == vehicle_id,
+                Tire.position == payload.position,
+                Tire.status == "mounted",
+                Tire.id != tire.id,
+            )
+            .first()
+        )
+    if occupied_tire and not payload.replace_existing:
+        raise HTTPException(status_code=409, detail="La posicion ya tiene una llanta montada. Usa replace_existing para cambiarla.")
+    if occupied_tire:
+        previous_position = occupied_tire.position
+        occupied_tire.status = "warehouse"
+        occupied_tire.vehicle_id = None
+        occupied_tire.position = ""
+        occupied_tire.location = occupied_tire.location or "Bodega"
+        db.add(TireEvent(
+            tenant_id=user["tenant_id"],
+            tire_id=occupied_tire.id,
+            vehicle_id=vehicle_id,
+            event_type="dismount",
+            event_date=payload.mount_date,
+            position=previous_position,
+            mileage=payload.mount_mileage,
+            min_tread_mm=occupied_tire.remaining_tread_mm,
+            destination="warehouse",
+            novelty=f"Desmontaje automatico por cambio de llanta en posicion {payload.position}.",
+            guidance=f"{occupied_tire.serial_number} desmontada por reemplazo en {vehicle.plate}.",
+            created_by=user["email"],
+            created_role=user.get("role", ""),
+        ))
+
+    if tire.vehicle_id is not None and tire.vehicle_id != vehicle_id:
+        previous_position_obj = (
+            db.query(VehicleTirePosition)
+            .filter(
+                _scope(VehicleTirePosition, user),
+                VehicleTirePosition.vehicle_id == tire.vehicle_id,
+                VehicleTirePosition.tire_id == tire.id,
+            )
+            .first()
+        )
+        if previous_position_obj:
+            previous_position_obj.tire_id = None
+
+    tire.vehicle_id = vehicle_id
+    tire.position = payload.position
+    tire.status = "mounted"
+    tire.location = ""
+    if payload.mount_mileage is not None:
+        tire.mount_mileage = payload.mount_mileage
+    if payload.tread_at_mount_mm is not None:
+        tire.tread_at_mount_mm = payload.tread_at_mount_mm
     if position_obj:
         position_obj.tire_id = tire.id
     else:
@@ -3474,6 +3604,7 @@ def dismount_batch(
         if mount_km is not None and payload.dismount_mileage is not None:
             km_this_stint = max(0.0, payload.dismount_mileage - mount_km)
             tire.total_km_all_lives = (tire.total_km_all_lives or 0) + km_this_stint
+        previous_position = tire.position
         dest = item.destination or "warehouse"
         if dest in ("disposal", "FBU", "baja"):
             tire.status = "disposal"
@@ -3484,6 +3615,7 @@ def dismount_batch(
             tire.status = "warehouse"
         tire.remaining_tread_mm = min_tread
         tire.vehicle_id = None
+        tire.position = ""
         position_obj = (
             db.query(VehicleTirePosition)
             .filter(
@@ -3501,7 +3633,7 @@ def dismount_batch(
             vehicle_id=vehicle_id,
             event_type="dismount",
             event_date=payload.dismount_date,
-            position=tire.position,
+            position=previous_position,
             mileage=payload.dismount_mileage,
             tread_outer_mm=item.tread_outer_mm,
             tread_center_mm=item.tread_center_mm,
@@ -3552,6 +3684,89 @@ def search_inventory_tires(
     return query.order_by(Tire.brand, Tire.serial_number).limit(50).all()
 
 
+@router.post("/vehicles/{vehicle_id}/rotate-tires", response_model=TireEventOut)
+def rotate_vehicle_tires(
+    vehicle_id: int,
+    payload: RotateVehicleTiresPayload,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "tires", "update")
+    vehicle = _get_or_404(db, Vehicle, vehicle_id, user)
+    from_position = payload.from_position.strip()
+    to_position = payload.to_position.strip()
+    if not from_position or not to_position or from_position == to_position:
+        raise HTTPException(status_code=400, detail="Selecciona posiciones origen y destino diferentes.")
+
+    from_tire = (
+        db.query(Tire)
+        .filter(_scope(Tire, user), Tire.vehicle_id == vehicle_id, Tire.position == from_position, Tire.status == "mounted")
+        .first()
+    )
+    to_tire = (
+        db.query(Tire)
+        .filter(_scope(Tire, user), Tire.vehicle_id == vehicle_id, Tire.position == to_position, Tire.status == "mounted")
+        .first()
+    )
+    if not from_tire or not to_tire:
+        raise HTTPException(status_code=400, detail="Ambas posiciones deben tener llanta montada para rotar.")
+
+    from_position_obj = (
+        db.query(VehicleTirePosition)
+        .filter(_scope(VehicleTirePosition, user), VehicleTirePosition.vehicle_id == vehicle_id, VehicleTirePosition.position_code == from_position)
+        .first()
+    )
+    to_position_obj = (
+        db.query(VehicleTirePosition)
+        .filter(_scope(VehicleTirePosition, user), VehicleTirePosition.vehicle_id == vehicle_id, VehicleTirePosition.position_code == to_position)
+        .first()
+    )
+    if not from_position_obj:
+        from_position_obj = VehicleTirePosition(
+            tenant_id=user["tenant_id"],
+            vehicle_id=vehicle_id,
+            position_code=from_position,
+            tire_id=from_tire.id,
+        )
+        db.add(from_position_obj)
+    if not to_position_obj:
+        to_position_obj = VehicleTirePosition(
+            tenant_id=user["tenant_id"],
+            vehicle_id=vehicle_id,
+            position_code=to_position,
+            tire_id=to_tire.id,
+        )
+        db.add(to_position_obj)
+
+    from_tire.position = to_position
+    to_tire.position = from_position
+    from_position_obj.tire_id = to_tire.id
+    to_position_obj.tire_id = from_tire.id
+
+    event = TireEvent(
+        tenant_id=user["tenant_id"],
+        tire_id=from_tire.id,
+        vehicle_id=vehicle_id,
+        event_type="rotation",
+        event_date=payload.rotation_date,
+        position=from_position,
+        mileage=payload.mileage,
+        origin=from_position,
+        destination=to_position,
+        provider=payload.provider,
+        cost=payload.cost,
+        novelty=payload.observation or f"Rotacion {from_position} -> {to_position}.",
+        guidance=f"Rotacion registrada en {vehicle.plate}: {from_position} <-> {to_position}.",
+        created_by=user["email"],
+        created_role=user.get("role", ""),
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    _write_audit_log(db, user, "tires", "rotation", vehicle_id, f"{vehicle.plate}: {from_position}<->{to_position}")
+    return TireEventOut(**_event_payload(event))
+
+
 @router.post("/vehicles/{vehicle_id}/alignment", response_model=TireEventOut)
 def create_alignment(
     vehicle_id: int,
@@ -3567,6 +3782,7 @@ def create_alignment(
         vehicle_id=vehicle_id,
         event_type="alignment",
         event_date=payload.alignment_date,
+        position=",".join(position.strip() for position in payload.positions if position.strip()),
         mileage=payload.mileage,
         provider=payload.provider,
         cost=payload.cost,

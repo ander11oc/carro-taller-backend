@@ -192,11 +192,27 @@ class TireInspectionCreate(BaseModel):
     pressure_psi: Optional[float] = None
     tread_outer_mm: float
     tread_center_mm: float
+    tread_center_outer_mm: Optional[float] = None
     tread_inner_mm: float
     damage: str = ""
     novelty: str = ""
     evidence_url: str = ""
     justification: str = ""
+
+
+class InspectionUpdatePayload(BaseModel):
+    event_date: Optional[date] = None
+    position: Optional[str] = None
+    mileage: Optional[float] = None
+    pressure_psi: Optional[float] = None
+    tread_outer_mm: Optional[float] = None
+    tread_center_mm: Optional[float] = None
+    tread_center_outer_mm: Optional[float] = None
+    tread_inner_mm: Optional[float] = None
+    damage: str = ""
+    novelty: str = ""
+    evidence_url: str = ""
+    justification: str
 
 
 class TireMovementCreate(BaseModel):
@@ -226,6 +242,7 @@ class TireEventOut(BaseModel):
     pressure_psi: Optional[float] = None
     tread_outer_mm: Optional[float] = None
     tread_center_mm: Optional[float] = None
+    tread_center_outer_mm: Optional[float] = None
     tread_inner_mm: Optional[float] = None
     min_tread_mm: Optional[float] = None
     damage: str = ""
@@ -861,6 +878,7 @@ class MountTirePayload(BaseModel):
     provider: str = ""
     cost: Optional[float] = None
     add_cost_to_vehicle: bool = False
+    replace_existing: bool = False
     observation: str = ""
 
 
@@ -888,6 +906,17 @@ class AlignmentPayload(BaseModel):
     provider: str = ""
     cost: Optional[float] = None
     alignment_type: str = "direccion"
+    positions: list[str] = Field(default_factory=list)
+    observation: str = ""
+
+
+class RotateVehicleTiresPayload(BaseModel):
+    from_position: str
+    to_position: str
+    rotation_date: date
+    mileage: Optional[float] = None
+    provider: str = ""
+    cost: Optional[float] = None
     observation: str = ""
 
 
