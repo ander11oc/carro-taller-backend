@@ -726,6 +726,32 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(tire.provider_id, provider.id)
         self.assertEqual(position.tire_id, tire.id)
 
+    def test_reconcile_tire_relationships_treats_na_position_as_missing(self):
+        tire = Tire(
+            tenant_id="tenant_test",
+            serial_number="REC-NA",
+            vehicle_id=self.vehicle.id,
+            position="N/A",
+            brand="MICHELIN",
+            status="mounted",
+            remaining_tread_mm=10,
+        )
+        self.db.add(tire)
+        self.db.commit()
+
+        result = reconcile_tire_relationships(
+            RelationshipReconcileRequest(apply=True),
+            self.db,
+            ADMIN,
+        )
+
+        position = self.db.query(VehicleTirePosition).filter(
+            VehicleTirePosition.vehicle_id == self.vehicle.id,
+            VehicleTirePosition.position_code == "N/A",
+        ).first()
+        self.assertGreaterEqual(result.mounted_without_vehicle_or_position, 1)
+        self.assertIsNone(position)
+
     def test_master_preview_detects_incomplete_rows_duplicates_and_missing_catalogs(self):
         preview = preview_tire_master_import(
             TireMasterPreviewRequest(

@@ -925,7 +925,8 @@ def reconcile_tire_relationships(
         .all()
     )
     for tire in mounted_tires:
-        has_vehicle_position = tire.vehicle_id is not None and bool((tire.position or "").strip())
+        clean_position = (tire.position or "").strip().upper()
+        has_vehicle_position = tire.vehicle_id is not None and clean_position not in {"", "N/A", "NA", "-", "--"}
         if not has_vehicle_position:
             result.mounted_without_vehicle_or_position += 1
             result.warnings.append(f"Llanta {tire.serial_number} montada sin vehiculo/posicion.")
