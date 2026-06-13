@@ -434,6 +434,47 @@ class TireOperationsTest(unittest.TestCase):
         self.assertIn("fila 502", event.novelty)
         self.assertEqual(result.import_batch_id, "llantas-test-batch")
 
+    def test_master_import_reads_cloudfleet_catalog_location_as_mount(self):
+        result = import_tire_master_rows(
+            TireMasterImportRequest(
+                source_sheet="ListaLlantas20260612",
+                import_batch_id="catalog-location-batch",
+                source_row_start=2,
+                rows=[
+                    {
+                        "Codigo Llanta": "7982",
+                        "Llanta": "LAUFEN LF21 215/75R17.5",
+                        "Ubicacion": "Montada\nVehiculo: JUY925\nPosicion: 2",
+                        "Proveedor": "Solistica",
+                        "Costo": "950000",
+                        "Codigo Vida": "VN",
+                        "% Desgaste": "43,75",
+                        "Tipo Posicion": "Toda posicion (All Position)",
+                    }
+                ],
+            ),
+            self.db,
+            ADMIN,
+        )
+
+        tire = self.db.query(Tire).filter(Tire.serial_number == "7982").one()
+        vehicle = self.db.query(Vehicle).filter(Vehicle.plate == "JUY925").one()
+        position = self.db.query(VehicleTirePosition).filter(
+            VehicleTirePosition.vehicle_id == vehicle.id,
+            VehicleTirePosition.position_code == "2",
+        ).one()
+
+        self.assertEqual(result.created_tires, 1)
+        self.assertEqual(tire.vehicle_id, vehicle.id)
+        self.assertEqual(tire.position, "2")
+        self.assertEqual(tire.brand, "LAUFEN")
+        self.assertEqual(tire.design, "LF21")
+        self.assertEqual(tire.dimension, "215/75R17.5")
+        self.assertEqual(tire.status, "mounted")
+        self.assertEqual(tire.provider, "Solistica")
+        self.assertEqual(tire.initial_cost, 950000)
+        self.assertEqual(position.tire_id, tire.id)
+
     def test_master_import_retry_same_batch_does_not_duplicate_initial_event(self):
         payload = TireMasterImportRequest(
             source_sheet="03_Llantas",

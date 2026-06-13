@@ -1,4 +1,6 @@
-from datetime import date, datetime, timedelta
+﻿from datetime import date, datetime, timedelta
+import re
+import unicodedata
 from typing import Optional
 from uuid import uuid4
 
@@ -197,13 +199,13 @@ def _find_tire_by_serial(db: Session, user, serial: str) -> Tire | None:
 
 
 def _normalize_header(value: str) -> str:
-    replacements = str.maketrans("áéíóúÁÉÍÓÚñÑ", "aeiouAEIOUnN")
+    normalized = unicodedata.normalize("NFKD", str(value))
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
     return "".join(
         char.lower()
-        for char in value.translate(replacements)
+        for char in normalized
         if char.isalnum()
     )
-
 
 def _row_text(row: dict, *names: str) -> str:
     normalized_row = {_normalize_header(str(key)): value for key, value in row.items()}
@@ -264,6 +266,10 @@ def _row_date(row: dict, *names: str) -> date | None:
 
 def _status_from_sheet(value: str) -> str:
     normalized = _normalize_catalog_value(value)
+    if normalized.startswith("MONTADA") or normalized.startswith("MONTADO"):
+        return "mounted"
+    if normalized.startswith("BODEGA"):
+        return "warehouse"
     mapping = {
         "MONTADA": "mounted",
         "MONTADO": "mounted",
@@ -275,6 +281,124 @@ def _status_from_sheet(value: str) -> str:
         "FBU": "disposal",
     }
     return mapping.get(normalized, value.strip().lower() or "mounted")
+
+
+def _parse_tire_label(label: str) -> dict[str, str]:
+    text = " ".join((label or "").split())
+    if not text:
+        return {"brand": "", "design": "", "dimension": ""}
+    upper = text.upper()
+    known_brands = (
+        "BF GOODRICH",
+        "DOUBLE COIN",
+        "GOOD YEAR",
+        "SUPER CARGO",
+        "SUPER ALLIANCE",
+        "CONTINENTAL",
+        "GOODYEAR",
+        "MICHELIN",
+        "LAUFEN",
+        "CHENGSHAN",
+        "KUMHO",
+        "APLUS",
+        "DUNLOP",
+        "PIRELLI",
+        "BRIDGESTONE",
+        "FIRESTONE",
+        "HANKOOK",
+        "WESTLAKE",
+    )
+    brand = ""
+    for candidate in known_brands:
+        if upper == candidate or upper.startswith(f"{candidate} "):
+            brand = text[: len(candidate)]
+            break
+    if not brand:
+        brand = text.split(" ", 1)[0]
+
+    dimension_match = re.search(r"\b\d{3}/\d{2}R\d{2}(?:\.\d)?\b", upper)
+    dimension = dimension_match.group(0) if dimension_match else ""
+    design = text[len(brand):].strip()
+    if dimension:
+        design = re.sub(re.escape(dimension), "", design, flags=re.IGNORECASE).strip()
+    return {"brand": brand.strip(), "design": design.strip(), "dimension": dimension.strip()}
+
+
+def _parse_tire_location(value: str) -> dict[str, str]:
+    text = " ".join((value or "").replace("\r", "\n").split())
+    vehicle_match = re.search(r"veh[iÃ­]culo\s*:\s*([A-Za-z0-9-]+)", text, flags=re.IGNORECASE)
+    position_match = re.search(r"posici[oÃ³]n\s*:\s*([A-Za-z0-9()/-]+)", text, flags=re.IGNORECASE)
+    status = text
+    for separator in (" Vehiculo:", " VehÃ­culo:", " Posicion:", " PosiciÃ³n:"):
+        if separator in status:
+            status = status.split(separator, 1)[0].strip()
+    return {
+        "status": status,
+        "plate": vehicle_match.group(1).upper() if vehicle_match else "",
+        "position": position_match.group(1).upper() if position_match else "",
+    }
+
+
+def _default_original_tread(dimension: str) -> float | None:
+    if not dimension:
+        return None
+    if "17.5" in dimension:
+        return 17.0
+    if "22.5" in dimension:
+        return 18.0
+    return 16.0
+
+
+def _tire_master_values(row: dict) -> dict[str, str | float | None]:
+    label = _row_text(row, "llanta", "tire", "descripcion", "descripciÃ³n")
+    parsed_label = _parse_tire_label(label)
+    location = _row_text(row, "ubicacion", "ubicaciÃ³n", "location")
+    parsed_location = _parse_tire_location(location)
+
+    original_tread = _row_float(
+        row,
+        "prof. original mm",
+        "prof original mm",
+        "profundidad original",
+        "original_tread_mm",
+    )
+    dimension = _row_text(row, "dimension", "medida", "dim") or parsed_label["dimension"]
+    if original_tread is None:
+        original_tread = _default_original_tread(dimension)
+
+    remaining_tread = _row_float(
+        row,
+        "prof. actual mm",
+        "prof actual mm",
+        "profundidad actual",
+        "remaining_tread_mm",
+    )
+    wear_pct = _row_float(row, "% desgaste", "desgaste", "wear_pct")
+    if remaining_tread is None and original_tread is not None and wear_pct is not None:
+        remaining_tread = round(original_tread * max(0.0, 100.0 - wear_pct) / 100.0, 2)
+
+    return {
+        "serial": _normalize_serial(_row_text(
+            row,
+            "serial_number",
+            "serial",
+            "codigo llanta",
+            "cÃ³digo llanta",
+            "codigo",
+            "code",
+            "internal_number",
+        )),
+        "brand": _row_text(row, "brand", "marca") or parsed_label["brand"],
+        "design": _row_text(row, "design", "diseno", "diseÃ±o") or parsed_label["design"],
+        "dimension": dimension,
+        "plate": _row_text(row, "placa actual", "placa", "plate", "vehicle_plate", "vehiculo", "vehÃ­culo") or parsed_location["plate"],
+        "position": _row_text(row, "posicion", "posiciÃ³n", "position") or parsed_location["position"],
+        "location": location,
+        "status_source": _row_text(row, "estado", "status") or parsed_location["status"] or location,
+        "life_cycle": _row_text(row, "vida", "codigo vida", "cÃ³digo vida", "life_cycle") or "VN",
+        "original_tread": original_tread,
+        "remaining_tread": remaining_tread,
+    }
 
 
 def _inspection_min_tread(payload: TireInspectionCreate) -> float:
@@ -542,12 +666,12 @@ def delete_vehicle(
     require_module_action(user, "vehicles", "delete")
     item = _get_or_404(db, Vehicle, item_id, user)
     details = item.plate
-    # ── Full cascade delete (6 FK tables) ──────────────────────────────────
+    # â”€â”€ Full cascade delete (6 FK tables) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # 1. VehicleTirePosition
     db.query(VehicleTirePosition).filter(VehicleTirePosition.vehicle_id == item_id).delete(synchronize_session=False)
-    # 2. TireEvent — direct vehicle_id reference
+    # 2. TireEvent â€” direct vehicle_id reference
     db.query(TireEvent).filter(TireEvent.vehicle_id == item_id).delete(synchronize_session=False)
-    # 3. TireEvent — via tire (tire_id of tires belonging to this vehicle)
+    # 3. TireEvent â€” via tire (tire_id of tires belonging to this vehicle)
     tire_ids = [t.id for t in db.query(Tire.id).filter(Tire.vehicle_id == item_id).all()]
     if tire_ids:
         db.query(TireEvent).filter(TireEvent.tire_id.in_(tire_ids)).delete(synchronize_session=False)
@@ -569,7 +693,7 @@ def delete_vehicle(
 
 
 
-# ── Vehicle CSV import ──────────────────────────────────────────────────────
+# â”€â”€ Vehicle CSV import â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import io as _io
 import csv as _csv
 import unicodedata as _unicodedata
@@ -590,8 +714,8 @@ def import_vehicles_csv(
     user=Depends(get_current_user),
 ):
     """
-    Importa vehículos desde un CSV con columnas:
-    Vehículo, Tipo, Marca/Línea, Conductor, Capacidad, Ciudad,
+    Importa vehÃ­culos desde un CSV con columnas:
+    VehÃ­culo, Tipo, Marca/LÃ­nea, Conductor, Capacidad, Ciudad,
     Centro de Costos, Grupo primario, Grupo secundario, Tolerancia
     """
     require_module_action(user, "vehicles", "create")
@@ -613,7 +737,7 @@ def import_vehicles_csv(
                 data_lines.append(line)
 
     if not data_lines:
-        raise HTTPException(status_code=400, detail="No se encontró la fila de encabezado en el CSV")
+        raise HTTPException(status_code=400, detail="No se encontrÃ³ la fila de encabezado en el CSV")
 
     reader = _csv.DictReader(data_lines)
     created = 0
@@ -661,15 +785,15 @@ def import_vehicles_csv(
     for row in reader:
         row = {k.strip().rstrip(","): (v or "").strip() for k, v in row.items() if k}
 
-        # Plate — handle encoding variants
+        # Plate â€” handle encoding variants
         plate = row_value_containing(row, "vehiculo").upper()
         if not plate:
             continue
 
         tipo = row_value(row, "Tipo") or row_value_containing(row, "tipo", "vehiculo")
 
-        # Marca/Línea — handle encoding variants
-        marca_raw = row_value(row, "Marca/Linea", "Marca/Línea")
+        # Marca/LÃ­nea â€” handle encoding variants
+        marca_raw = row_value(row, "Marca/Linea", "Marca/LÃ­nea")
 
         if marca_raw:
             parts = marca_raw.split(" ", 1)
@@ -677,7 +801,7 @@ def import_vehicles_csv(
             model = parts[1] if len(parts) > 1 else tipo
         else:
             brand = row_value(row, "Marca")
-            model = row_value(row, "Linea", "Línea") or tipo
+            model = row_value(row, "Linea", "LÃ­nea") or tipo
 
         conductor = row_value(row, "Conductor", "Conductor Actual")
         ciudad    = row_value(row, "Ciudad")
@@ -864,16 +988,6 @@ def preview_tire_master_import(
     user=Depends(get_current_user),
 ):
     require_module_action(user, "tires", "import")
-    required = {
-        "serial_number": ("serial_number", "serial", "codigo", "code", "internal_number"),
-        "brand": ("brand", "marca"),
-        "design": ("design", "diseno", "diseño"),
-        "dimension": ("dimension", "medida", "dim"),
-        "original_tread": ("prof. original mm", "prof original mm", "profundidad original", "original_tread_mm"),
-        "remaining_tread": ("prof. actual mm", "prof actual mm", "profundidad actual", "remaining_tread_mm"),
-        "plate": ("placa actual", "placa", "plate", "vehicle_plate"),
-        "position": ("posicion", "posición", "position"),
-    }
     serial_counts: dict[str, int] = {}
     incomplete_count = 0
     missing_catalogs: dict[str, set[str]] = {"brand": set(), "design": set(), "dimension": set(), "site": set(), "status": set()}
@@ -890,28 +1004,35 @@ def preview_tire_master_import(
             .all()
         }
     for row in payload.rows:
-        normalized = {key: _row_text(row, *aliases) for key, aliases in required.items()}
-        if not all(normalized.values()):
+        normalized = _tire_master_values(row)
+        if not all([
+            normalized["serial"],
+            normalized["brand"],
+            normalized["design"],
+            normalized["dimension"],
+            normalized["plate"],
+            normalized["position"],
+            normalized["original_tread"],
+            normalized["remaining_tread"],
+        ]):
             incomplete_count += 1
             continue
-        serial = _normalize_serial(normalized["serial_number"])
-        normalized["serial_number"] = serial
+        serial = str(normalized["serial"])
         serial_counts[serial] = serial_counts.get(serial, 0) + 1
-        for catalog_type, aliases in {
-            "brand": ("brand", "marca"),
-            "design": ("design", "diseno", "diseño"),
-            "dimension": ("dimension", "medida", "dim"),
-            "site": ("sede", "site"),
-            "status": ("estado", "status"),
+        for catalog_type, raw in {
+            "brand": str(normalized["brand"] or ""),
+            "design": str(normalized["design"] or ""),
+            "dimension": str(normalized["dimension"] or ""),
+            "site": _row_text(row, "sede", "site", "zona", "tipo posicion", "tipo posicion"),
+            "status": str(normalized["status_source"] or ""),
         }.items():
-            raw = _row_text(row, *aliases)
             if not raw:
                 continue
             value = _normalize_catalog_value(raw)
             if value and value not in existing_catalogs[catalog_type]:
                 missing_catalogs[catalog_type].add(value)
-        original_tread = _row_float(row, "prof. original mm", "prof original mm", "profundidad original", "original_tread_mm")
-        remaining_tread = _row_float(row, "prof. actual mm", "prof actual mm", "profundidad actual", "remaining_tread_mm")
+        original_tread = normalized["original_tread"]
+        remaining_tread = normalized["remaining_tread"]
         if original_tread is not None and remaining_tread is not None and remaining_tread > original_tread:
             incomplete_count += 1
     duplicate_serials = sorted(serial for serial, count in serial_counts.items() if count > 1)
@@ -956,7 +1077,8 @@ def import_tire_master_rows(
 
     source_row_start = max(1, payload.source_row_start)
     for index, row in enumerate(payload.rows, start=source_row_start):
-        serial = _normalize_serial(_row_text(row, "serial_number", "serial", "codigo", "code", "internal_number"))
+        normalized = _tire_master_values(row)
+        serial = str(normalized["serial"] or "")
         if not serial:
             skipped_rows += 1
             errors.append(f"Fila {index}: serial obligatorio.")
@@ -967,13 +1089,13 @@ def import_tire_master_rows(
             continue
         seen_serials.add(serial)
 
-        brand = _row_text(row, "brand", "marca")
-        design = _row_text(row, "design", "diseno", "diseño")
-        dimension = _row_text(row, "dimension", "medida", "dim")
-        plate = _row_text(row, "placa actual", "placa", "vehicle_plate")
-        position_code = _row_text(row, "posicion", "posición", "position")
-        original_tread = _row_float(row, "prof. original mm", "prof original mm", "profundidad original", "original_tread_mm")
-        remaining_tread = _row_float(row, "prof. actual mm", "prof actual mm", "profundidad actual", "remaining_tread_mm")
+        brand = str(normalized["brand"] or "")
+        design = str(normalized["design"] or "")
+        dimension = str(normalized["dimension"] or "")
+        plate = str(normalized["plate"] or "")
+        position_code = str(normalized["position"] or "")
+        original_tread = normalized["original_tread"]
+        remaining_tread = normalized["remaining_tread"]
         if not all([brand, design, dimension, plate, position_code]) or original_tread is None or remaining_tread is None:
             skipped_rows += 1
             errors.append(f"Fila {index}: faltan campos obligatorios para LLANTAS.")
@@ -988,8 +1110,8 @@ def import_tire_master_rows(
                 "brand": brand,
                 "design": design,
                 "dimension": dimension,
-                "site": _row_text(row, "sede", "site"),
-                "status": _row_text(row, "estado", "status"),
+                "site": _row_text(row, "sede", "site", "zona", "tipo posicion", "tipo posicion"),
+                "status": str(normalized["status_source"] or ""),
             }.items():
                 _ensure_tire_catalog(db, user, catalog_type, value)
 
@@ -1038,15 +1160,16 @@ def import_tire_master_rows(
             "brand": brand,
             "design": design,
             "dimension": dimension,
-            "life_cycle": _row_text(row, "vida", "life_cycle") or "new",
+            "life_cycle": str(normalized["life_cycle"] or "VN"),
             "position": position_code,
             "remaining_tread_mm": remaining_tread,
             "vehicle_id": vehicle.id,
-            "status": _status_from_sheet(_row_text(row, "estado", "status")),
-            "location": _row_text(row, "sede", "site"),
-            "site": _row_text(row, "sede", "site"),
+            "status": _status_from_sheet(str(normalized["status_source"] or "")),
+            "location": str(normalized["location"] or ""),
+            "site": _row_text(row, "sede", "site", "zona", "tipo posicion", "tipo posicion"),
+            "provider": _row_text(row, "proveedor", "provider"),
             "original_tread_mm": original_tread,
-            "initial_cost": _row_money(row, "valor compra", "valor de compra", "initial_cost"),
+            "initial_cost": _row_money(row, "valor compra", "valor de compra", "initial_cost", "costo"),
             "purchase_date": _row_date(row, "fecha compra", "purchase_date"),
             "source_sheet": payload.source_sheet,
             "source_row": index,
@@ -1609,7 +1732,7 @@ def get_tire_decision_motor(
                 action="reencauchar",
                 severity="medium",
                 title="Evaluar reencauche",
-                reason="La carcasa esta entrando a zona de retiro; validar daño, vida y proveedor antes de baja.",
+                reason="La carcasa esta entrando a zona de retiro; validar daÃ±o, vida y proveedor antes de baja.",
                 tire_id=tire.id,
                 vehicle_id=tire.vehicle_id,
                 position=tire.position,
@@ -1631,7 +1754,7 @@ def get_tire_decision_motor(
                     action="desgaste_anormal",
                     severity="high",
                     title="Revisar desgaste anormal",
-                    reason="El patrón sugiere problema mecánico, presión o alineación.",
+                    reason="El patrÃ³n sugiere problema mecÃ¡nico, presiÃ³n o alineaciÃ³n.",
                     tire_id=tire.id,
                     vehicle_id=tire.vehicle_id,
                     position=tire.position,
@@ -1651,7 +1774,7 @@ def get_tire_decision_motor(
                 action="prediccion_falla",
                 severity="high",
                 title="Riesgo de falla",
-                reason="Daño o presión fuera de objetivo elevan el riesgo operativo.",
+                reason="DaÃ±o o presiÃ³n fuera de objetivo elevan el riesgo operativo.",
                 tire_id=tire.id,
                 vehicle_id=tire.vehicle_id,
                 position=tire.position,
@@ -2472,7 +2595,7 @@ def audit_logs(
 
 
 # =====================================================
-# VehicleTireView — endpoints
+# VehicleTireView â€” endpoints
 # =====================================================
 import csv
 import io
@@ -2600,7 +2723,7 @@ def get_vehicle_info(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Ficha extendida del vehículo para VehicleTireView."""
+    """Ficha extendida del vehÃ­culo para VehicleTireView."""
     require_module_action(user, "vehicles", "read")
     return _get_or_404(db, Vehicle, vehicle_id, user)
 
@@ -2611,7 +2734,7 @@ def get_vehicle_tire_detail(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Llantas del vehículo con 11 columnas enriquecidas + semáforo."""
+    """Llantas del vehÃ­culo con 11 columnas enriquecidas + semÃ¡foro."""
     require_module_action(user, "tires", "read")
     vehicle = _get_or_404(db, Vehicle, vehicle_id, user)
     tires = (
@@ -2632,7 +2755,7 @@ def get_vehicle_tire_events(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Timeline de eventos de todas las llantas del vehículo."""
+    """Timeline de eventos de todas las llantas del vehÃ­culo."""
     require_module_action(user, "tires", "read")
     _get_or_404(db, Vehicle, vehicle_id, user)
     offset = (page - 1) * page_size
@@ -2683,7 +2806,7 @@ def mount_tire_to_vehicle(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Montar una llanta en una posición del vehículo."""
+    """Montar una llanta en una posiciÃ³n del vehÃ­culo."""
     require_module_action(user, "tires", "update")
     vehicle = _get_or_404(db, Vehicle, vehicle_id, user)
     if not payload.tire_id:
@@ -2725,7 +2848,7 @@ def mount_tire_to_vehicle(
         provider=payload.provider,
         cost=payload.cost,
         novelty=payload.observation,
-        guidance=f"Montaje en posición {payload.position}.",
+        guidance=f"Montaje en posiciÃ³n {payload.position}.",
         created_by=user["email"],
         created_role=user.get("role", ""),
     )
@@ -2847,7 +2970,7 @@ def create_alignment(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Registrar alineación del vehículo."""
+    """Registrar alineaciÃ³n del vehÃ­culo."""
     require_module_action(user, "tires", "create")
     _get_or_404(db, Vehicle, vehicle_id, user)
     event = TireEvent(
@@ -2861,14 +2984,14 @@ def create_alignment(
         novelty=payload.observation,
         created_by=user["email"],
         created_role=user.get("role", ""),
-        guidance=f"Alineación {payload.alignment_type} registrada.",
+        guidance=f"AlineaciÃ³n {payload.alignment_type} registrada.",
     )
     setattr(event, "alignment_type", payload.alignment_type)
     db.add(event)
     db.commit()
     db.refresh(event)
     _write_audit_log(db, user, "tires", "alignment", vehicle_id,
-                     f"Alineación {payload.alignment_type}")
+                     f"AlineaciÃ³n {payload.alignment_type}")
     return TireEventOut(**_event_payload(event))
 
 
@@ -2878,7 +3001,7 @@ def export_vehicle_tires_csv(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Exportar CSV con las 11 columnas de llantas del vehículo."""
+    """Exportar CSV con las 11 columnas de llantas del vehÃ­culo."""
     require_module_action(user, "tires", "read")
     vehicle = _get_or_404(db, Vehicle, vehicle_id, user)
     tires = (
