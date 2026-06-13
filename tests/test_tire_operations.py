@@ -24,6 +24,7 @@ from app.api.routes_fleet import (
     get_tire_recommendations,
     get_vehicle_tire_map,
     import_vehicles_csv,
+    router,
 )
 from app.db.base import Base
 from app.models.entities import Tire, TireEvent, Vehicle, VehicleTirePosition
@@ -222,6 +223,10 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(response.headers["X-Total-Count"], "2")
         self.assertEqual(getattr(rows[0], "vehicle_plate"), "CAUCA-808")
 
+    def test_vehicle_search_route_is_registered_before_numeric_vehicle_route(self):
+        paths = [route.path for route in router.routes if hasattr(route, "path")]
+        self.assertLess(paths.index("/fleet/vehicles/search"), paths.index("/fleet/vehicles/{item_id}"))
+
     def test_vehicle_csv_import_uses_existing_vehicle_fields(self):
         csv_text = "\n".join(
             [
@@ -241,11 +246,12 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(vehicle.model, "NPR")
         self.assertEqual(vehicle.current_driver, "Ana Ruiz")
         self.assertEqual(vehicle.cost_center, "CC-01")
-        self.assertEqual(vehicle.line, "Primario A")
+        self.assertEqual(vehicle.line, "NPR")
         self.assertEqual(vehicle.mileage, 42949)
         self.assertIn("Camion", vehicle.notes)
         self.assertIn("Medellin", vehicle.notes)
-        self.assertIn("Secundario B", vehicle.notes)
+        self.assertIn("Grupo primario: Primario A", vehicle.notes)
+        self.assertIn("Grupo secundario: Secundario B", vehicle.notes)
 
     def test_vehicle_csv_import_updates_existing_vehicle_fields(self):
         existing = Vehicle(
@@ -283,10 +289,13 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(result.updated, 1)
         self.assertEqual(vehicle.brand, "SHACMAN")
         self.assertEqual(vehicle.model, "X5000")
+        self.assertEqual(vehicle.line, "X5000")
         self.assertEqual(vehicle.mileage, 42949)
         self.assertEqual(vehicle.current_driver, "Sin Definir")
         self.assertEqual(vehicle.cost_center, "218")
         self.assertIn("TRACTOCAMION", vehicle.notes)
+        self.assertIn("Grupo primario: Operacion", vehicle.notes)
+        self.assertIn("Grupo secundario: Primario", vehicle.notes)
 
     def test_master_preview_detects_incomplete_rows_duplicates_and_missing_catalogs(self):
         preview = preview_tire_master_import(

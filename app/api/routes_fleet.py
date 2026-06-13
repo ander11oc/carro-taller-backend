@@ -666,7 +666,8 @@ def import_vehicles_csv(
             for item in (
                 f"Tipo: {tipo}" if tipo else "",
                 f"Ciudad: {ciudad}" if ciudad else "",
-                f"Grupo: {grupo_s}" if grupo_s else "",
+                f"Grupo primario: {grupo_p}" if grupo_p else "",
+                f"Grupo secundario: {grupo_s}" if grupo_s else "",
             )
             if item
         )
@@ -682,7 +683,7 @@ def import_vehicles_csv(
                 existing.mileage = km_actual
                 existing.notes = notes or existing.notes
                 existing.cost_center = cdc
-                existing.line = grupo_p
+                existing.line = model or existing.line
                 existing.current_driver = conductor
                 updated += 1
             else:
@@ -696,7 +697,7 @@ def import_vehicles_csv(
                     status="active",
                     notes=notes,
                     cost_center=cdc,
-                    line=grupo_p,
+                    line=model,
                     current_driver=conductor,
                     owner="",
                 )

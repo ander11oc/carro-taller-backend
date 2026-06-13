@@ -5,7 +5,7 @@ This uploads the whole vehicle CSV to /api/v1/fleet/vehicles/import-csv so the
 backend can create new vehicles and update existing ones in one pass.
 
 Usage:
-  python scripts/import_vehicles_api.py --api https://carro-taller-backend.onrender.com --user admin@fleet.com --pass admin123
+  python scripts/import_vehicles_api.py --api https://carro-taller-backend.onrender.com --user admin@fleet.com --pass "<password>"
 """
 import argparse
 import io
