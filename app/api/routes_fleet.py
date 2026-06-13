@@ -441,7 +441,15 @@ def create_vehicle(
     payload: VehicleCreate, db: Session = Depends(get_db), user=Depends(get_current_user)
 ):
     require_module_action(user, "vehicles", "create")
+    # Unicidad de placa por tenant
+    existing = db.query(Vehicle).filter(
+        Vehicle.tenant_id == user["tenant_id"],
+        Vehicle.plate == payload.plate.strip().upper(),
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Vehiculo con placa '{payload.plate}' ya existe")
     item = Vehicle(tenant_id=user["tenant_id"], **payload.model_dump())
+    item.plate = item.plate.strip().upper()
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -613,22 +621,30 @@ def import_vehicles_csv(
         grupo_p   = row.get("Grupo primario", "").strip()
         grupo_s   = row.get("Grupo secundario", "").strip()
 
+        notes = "; ".join(
+            item
+            for item in (
+                f"Tipo: {tipo}" if tipo else "",
+                f"Ciudad: {ciudad}" if ciudad else "",
+                f"Grupo: {grupo_s}" if grupo_s else "",
+            )
+            if item
+        )
+
         try:
             v = Vehicle(
-                tenant_id      = tenant_id,
-                plate          = plate,
-                brand          = brand,
-                model          = model,
-                year           = 2020,
-                vehicle_type   = tipo,
-                mileage        = 0.0,
-                status         = "active",
-                site           = ciudad,
-                notes          = f"Grupo: {grupo_s}" if grupo_s else "",
-                cost_center    = cdc,
-                line           = grupo_p,
-                current_driver = conductor,
-                owner          = "",
+                tenant_id=tenant_id,
+                plate=plate,
+                brand=brand,
+                model=model,
+                year=2020,
+                mileage=0.0,
+                status="active",
+                notes=notes,
+                cost_center=cdc,
+                line=grupo_p,
+                current_driver=conductor,
+                owner="",
             )
             db.add(v)
             db.flush()
