@@ -460,6 +460,8 @@ class TireOperationsTest(unittest.TestCase):
         self.assertEqual(tire.site, "Bogotá")
         self.assertEqual(tire.initial_cost, 751343)
         self.assertEqual(tire.purchase_date, date(2025, 5, 12))
+        self.assertEqual(tire.mount_mileage, 134.9)
+        self.assertEqual(tire.tread_at_mount_mm, 16)
         self.assertEqual(tire.remaining_tread_mm, 4.5)
         self.assertEqual(tire.original_tread_mm, 16)
         self.assertEqual(tire.vehicle_id, vehicle.id)

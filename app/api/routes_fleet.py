@@ -1349,6 +1349,8 @@ def import_tire_master_rows(
             "provider": _row_text(row, "proveedor", "provider"),
             "original_tread_mm": original_tread,
             "initial_cost": _row_money(row, "valor compra", "valor de compra", "initial_cost", "costo"),
+            "mount_mileage": _row_float(row, "medicion montaje", "medición montaje", "km desde montaje", "km desde", "km_desde_montaje"),
+            "tread_at_mount_mm": original_tread,
             "purchase_date": _row_date(row, "fecha compra", "purchase_date"),
             "source_sheet": payload.source_sheet,
             "source_row": index,
@@ -2817,6 +2819,18 @@ def _build_tire_row(db: Session, user, vehicle: Vehicle, tire: Tire) -> dict:
         .order_by(TireEvent.event_date.desc(), TireEvent.id.desc())
         .first()
     )
+    if not mount_event:
+        mount_event = (
+            db.query(TireEvent)
+            .filter(
+                TireEvent.tenant_id == tenant_id,
+                TireEvent.tire_id == tire.id,
+                TireEvent.event_type == "master_import",
+                TireEvent.mileage.isnot(None),
+            )
+            .order_by(TireEvent.event_date.asc(), TireEvent.id.asc())
+            .first()
+        )
 
     last_inspection = (
         db.query(TireEvent)
