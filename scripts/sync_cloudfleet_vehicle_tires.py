@@ -216,20 +216,64 @@ def has_vehicle_input(page) -> bool:
     )
 
 
+def is_cloudfleet_login_page(page) -> bool:
+    return bool(
+        page.evaluate(
+            """
+            () => {
+              const text = document.body ? document.body.innerText.toLowerCase() : '';
+              const url = window.location.href.toLowerCase();
+              return (
+                url.includes('/account/default.aspx') ||
+                url.includes('returnurl=') ||
+                text.includes('alias de tu cuenta') ||
+                text.includes('iniciar sesión') ||
+                text.includes('iniciar sesion') ||
+                !!document.querySelector('#c_TxtAccountAlias, input[name*="TxtAccountAlias"], input[name*="cmdLogin"]')
+              );
+            }
+            """
+        )
+    )
+
+
+def is_vehicle_tires_page(page) -> bool:
+    return bool(
+        page.evaluate(
+            """
+            () => {
+              const text = document.body ? document.body.innerText.toLowerCase() : '';
+              const url = window.location.href.toLowerCase();
+              return (
+                url.includes('/llantas/llantasvehiculo.aspx') &&
+                !text.includes('alias de tu cuenta') &&
+                (text.includes('llantas del vehículo') || text.includes('llantas del vehiculo'))
+              );
+            }
+            """
+        )
+    )
+
+
 def wait_for_cloudfleet_session(page, url: str, headless: bool) -> None:
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(1000)
-    if has_vehicle_input(page):
+    if is_vehicle_tires_page(page):
         return
     if headless:
         raise RuntimeError("CloudFleet no esta autenticado en el perfil Playwright. Ejecuta sin --headless y entra manualmente.")
-    print("\nCloudFleet no parece autenticado en este perfil.")
-    print("Inicia sesion en la ventana del navegador que se abrio y vuelve aqui.")
-    input("Cuando veas la pantalla de Llantas del Vehiculo, presiona ENTER...")
-    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(1000)
+    while not is_vehicle_tires_page(page):
+        if is_cloudfleet_login_page(page):
+            print("\nCloudFleet esta en pantalla de login.")
+            print("Inicia sesion completamente en la ventana del navegador.")
+        else:
+            print("\nAun no estoy en Llantas del Vehiculo.")
+            print("Navega en CloudFleet hasta Llantas > Llantas del Vehiculo.")
+        input("Cuando ya veas 'Llantas del Vehiculo' en el navegador, presiona ENTER aqui...")
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(1000)
     if not has_vehicle_input(page):
-        raise RuntimeError("No encontre la pantalla de Llantas del Vehiculo despues del login.")
+        raise RuntimeError("Estoy en Llantas del Vehiculo, pero no encontre el input de vehiculo.")
 
 
 def search_vehicle(page, plate: str) -> None:
@@ -312,10 +356,51 @@ def extract_mount_rows(page) -> list[dict[str, Any]]:
     return normalized
 
 
-def sync_plate(api: str, token: str, page, plate: str, source: str, screenshot_dir: Path | None) -> dict[str, Any]:
+def page_confirms_no_mounts(page) -> bool:
+    text = page.evaluate("() => document.body ? document.body.innerText : ''")
+    compact = " ".join(str(text or "").split()).lower()
+    return (
+        "no existen llantas montadas" in compact
+        or "sin llantas montadas" in compact
+        or "no tiene llantas montadas" in compact
+    )
+
+
+def page_mentions_plate(page, plate: str) -> bool:
+    text = page.evaluate("() => document.body ? document.body.innerText : ''")
+    return plate.upper() in str(text or "").upper()
+
+
+def save_page_evidence(page, evidence_dir: Path, plate: str, suffix: str) -> dict[str, str]:
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    base = evidence_dir / f"{plate}-{suffix}"
+    screenshot = str(base.with_suffix(".png"))
+    html_path = str(base.with_suffix(".html"))
+    try:
+        page.screenshot(path=screenshot, full_page=True)
+    except Exception:
+        screenshot = ""
+    try:
+        Path(html_path).write_text(page.content(), encoding="utf-8", errors="replace")
+    except Exception:
+        html_path = ""
+    return {"screenshot": screenshot, "html": html_path}
+
+
+def sync_plate(api: str, token: str, page, plate: str, source: str, evidence_dir: Path | None) -> dict[str, Any]:
     try:
         search_vehicle(page, plate)
         rows = extract_mount_rows(page)
+        no_mounts_confirmed = page_confirms_no_mounts(page)
+        plate_loaded = page_mentions_plate(page, plate)
+        evidence = {}
+        if evidence_dir:
+            evidence = save_page_evidence(page, evidence_dir, plate, "ok" if rows else "empty")
+        if not rows and not no_mounts_confirmed:
+            raise RuntimeError(
+                "No se extrajeron montajes y CloudFleet no confirmo vehiculo sin montajes. "
+                "No se sincroniza para evitar desmontar datos validos."
+            )
         result = post_json(
             api,
             token,
@@ -324,24 +409,22 @@ def sync_plate(api: str, token: str, page, plate: str, source: str, screenshot_d
                 "plate": plate,
                 "mounted": rows,
                 "source": source,
-                "clear_missing": True,
+                "clear_missing": bool(rows or (no_mounts_confirmed and plate_loaded)),
             },
         )
         result["mounted_rows"] = len(rows)
+        result["no_mounts_confirmed"] = no_mounts_confirmed
+        result["plate_loaded"] = plate_loaded
+        result.update(evidence)
         result["status"] = "ok"
         print(f"[OK] {plate}: {len(rows)} montajes")
         return result
     except Exception as exc:
-        screenshot = ""
-        if screenshot_dir:
-            screenshot_dir.mkdir(parents=True, exist_ok=True)
-            screenshot = str(screenshot_dir / f"{plate}.png")
-            try:
-                page.screenshot(path=screenshot, full_page=True)
-            except Exception:
-                screenshot = ""
+        evidence = {}
+        if evidence_dir:
+            evidence = save_page_evidence(page, evidence_dir, plate, "error")
         print(f"[ERROR] {plate}: {exc}")
-        return {"plate": plate, "status": "error", "error": str(exc), "screenshot": screenshot}
+        return {"plate": plate, "status": "error", "error": str(exc), **evidence}
 
 
 def write_reports(report_base: Path, rows: list[dict[str, Any]]) -> None:
