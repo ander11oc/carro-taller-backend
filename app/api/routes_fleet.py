@@ -907,6 +907,18 @@ def reconcile_tire_relationships(
 ):
     require_module_action(user, "tires", "update" if payload.apply else "read")
     result = RelationshipReconcileOut(apply=payload.apply)
+    providers_by_name = {
+        provider.normalized_name: provider
+        for provider in db.query(Provider)
+        .filter(_scope(Provider, user), Provider.is_active.is_(True))
+        .all()
+    }
+    positions_by_vehicle_code = {
+        (position.vehicle_id, position.position_code): position
+        for position in db.query(VehicleTirePosition)
+        .filter(_scope(VehicleTirePosition, user))
+        .all()
+    }
     mounted_tires = (
         db.query(Tire)
         .filter(_scope(Tire, user), Tire.status == "mounted")
@@ -918,15 +930,7 @@ def reconcile_tire_relationships(
             result.mounted_without_vehicle_or_position += 1
             result.warnings.append(f"Llanta {tire.serial_number} montada sin vehiculo/posicion.")
             continue
-        position = (
-            db.query(VehicleTirePosition)
-            .filter(
-                _scope(VehicleTirePosition, user),
-                VehicleTirePosition.vehicle_id == tire.vehicle_id,
-                VehicleTirePosition.position_code == tire.position,
-            )
-            .first()
-        )
+        position = positions_by_vehicle_code.get((tire.vehicle_id, tire.position))
         if not position or position.tire_id != tire.id:
             result.position_mismatches += 1
             if payload.apply:
@@ -943,7 +947,7 @@ def reconcile_tire_relationships(
                         )
                     )
                 result.fixed_positions += 1
-        provider = _find_provider_by_name(db, user, tire.provider)
+        provider = providers_by_name.get(_normalize_provider_name(tire.provider))
         if tire.provider and not tire.provider_id and provider:
             result.provider_text_without_provider_id += 1
             if payload.apply:
