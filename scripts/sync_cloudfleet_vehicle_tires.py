@@ -31,9 +31,11 @@ except ImportError:
     import requests
 
 try:
+    from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
 except ImportError:
+    PlaywrightError = Exception
     PlaywrightTimeoutError = None
     sync_playwright = None
 
@@ -255,9 +257,30 @@ def is_vehicle_tires_page(page) -> bool:
     )
 
 
+def goto_cloudfleet_page(page, url: str) -> None:
+    last_error = None
+    for _ in range(3):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_load_state("domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1000)
+            return
+        except PlaywrightError as exc:
+            last_error = exc
+            message = str(exc).lower()
+            if "interrupted by another navigation" not in message:
+                raise
+            page.wait_for_timeout(2500)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except PlaywrightError:
+                pass
+    if last_error:
+        raise last_error
+
+
 def wait_for_cloudfleet_session(page, url: str, headless: bool) -> None:
-    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(1000)
+    goto_cloudfleet_page(page, url)
     if is_vehicle_tires_page(page):
         return
     if headless:
@@ -270,8 +293,7 @@ def wait_for_cloudfleet_session(page, url: str, headless: bool) -> None:
             print("\nAun no estoy en Llantas del Vehiculo.")
             print("Navega en CloudFleet hasta Llantas > Llantas del Vehiculo.")
         input("Cuando ya veas 'Llantas del Vehiculo' en el navegador, presiona ENTER aqui...")
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1000)
+        goto_cloudfleet_page(page, url)
     if not has_vehicle_input(page):
         raise RuntimeError("Estoy en Llantas del Vehiculo, pero no encontre el input de vehiculo.")
 
