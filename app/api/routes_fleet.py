@@ -408,12 +408,12 @@ def _ensure_tire_catalog(db: Session, user, catalog_type: str, value: str) -> No
         )
     )
 
-
 # =====================================================
 # Vehicles
 # =====================================================
 @router.get("/vehicles", response_model=list[VehicleOut])
 def list_vehicles(
+    response: Response,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
     q: Optional[str] = Query(None),
@@ -432,6 +432,7 @@ def list_vehicles(
         )
     if status_f:
         query = query.filter(Vehicle.status == status_f)
+    response.headers["X-Total-Count"] = str(query.count())
     return query.order_by(Vehicle.id.desc()).offset(offset).limit(limit).all()
 
 
