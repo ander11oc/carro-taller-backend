@@ -821,6 +821,9 @@ class VehicleTireRowOut(BaseModel):
     remaining_tread_mm: float
     original_tread_mm: Optional[float] = None
     tread_at_mount_mm: Optional[float] = None
+    tread_outer_mm: Optional[float] = None
+    tread_center_mm: Optional[float] = None
+    tread_inner_mm: Optional[float] = None
     tread_worn_mm: Optional[float] = None
     tread_wear_pct: Optional[float] = None
     target_pressure_psi: Optional[float] = None

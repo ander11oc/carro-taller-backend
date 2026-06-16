@@ -3333,6 +3333,9 @@ def _build_tire_row(db: Session, user, vehicle: Vehicle, tire: Tire) -> dict:
             tread_wear_pct = round((tread_worn / tread_at_mount) * 100, 1)
 
     last_pressure = last_inspection.pressure_psi if last_inspection else None
+    tread_outer = last_inspection.tread_outer_mm if last_inspection else None
+    tread_center = last_inspection.tread_center_mm if last_inspection else None
+    tread_inner = last_inspection.tread_inner_mm if last_inspection else None
     status_color = _calc_status_color(tire)
     pressure_status = _calc_pressure_status(tire, last_pressure)
     last_tread_date = last_inspection.event_date if last_inspection else None
@@ -3365,6 +3368,9 @@ def _build_tire_row(db: Session, user, vehicle: Vehicle, tire: Tire) -> dict:
         "remaining_tread_mm": tire.remaining_tread_mm,
         "original_tread_mm": tire.original_tread_mm,
         "tread_at_mount_mm": tire.tread_at_mount_mm,
+        "tread_outer_mm": tread_outer if tread_outer is not None else tire.remaining_tread_mm,
+        "tread_center_mm": tread_center if tread_center is not None else tire.remaining_tread_mm,
+        "tread_inner_mm": tread_inner if tread_inner is not None else tire.remaining_tread_mm,
         "tread_worn_mm": tread_worn,
         "tread_wear_pct": tread_wear_pct,
         "target_pressure_psi": tire.target_pressure_psi,
