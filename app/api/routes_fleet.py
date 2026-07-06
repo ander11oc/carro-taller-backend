@@ -1601,8 +1601,6 @@ def preview_tire_master_import(
             normalized["brand"],
             normalized["design"],
             normalized["dimension"],
-            normalized["plate"],
-            normalized["position"],
             normalized["original_tread"],
             normalized["remaining_tread"],
         ]):
@@ -1687,7 +1685,7 @@ def import_tire_master_rows(
         position_code = str(normalized["position"] or "")
         original_tread = normalized["original_tread"]
         remaining_tread = normalized["remaining_tread"]
-        if not all([brand, design, dimension, plate, position_code]) or original_tread is None or remaining_tread is None:
+        if not all([brand, design, dimension]) or original_tread is None or remaining_tread is None:
             skipped_rows += 1
             errors.append(f"Fila {index}: faltan campos obligatorios para LLANTAS.")
             continue
@@ -1706,29 +1704,31 @@ def import_tire_master_rows(
             }.items():
                 _ensure_tire_catalog(db, user, catalog_type, value)
 
-        vehicle = (
-            db.query(Vehicle)
-            .filter(_scope(Vehicle, user), Vehicle.plate == plate)
-            .first()
-        )
-        if not vehicle:
-            if not payload.create_missing_vehicles:
-                skipped_rows += 1
-                errors.append(f"Fila {index}: placa {plate} no existe.")
-                continue
-            vehicle = Vehicle(
-                tenant_id=user["tenant_id"],
-                plate=plate,
-                brand="Pendiente",
-                model="Importado maestro llantas",
-                year=date.today().year,
-                mileage=0,
-                status="active",
-                notes=f"Creado automaticamente desde {payload.source_sheet}",
+        vehicle = None
+        if plate:
+            vehicle = (
+                db.query(Vehicle)
+                .filter(_scope(Vehicle, user), Vehicle.plate == plate)
+                .first()
             )
-            db.add(vehicle)
-            db.flush()
-            created_vehicles += 1
+            if not vehicle:
+                if not payload.create_missing_vehicles:
+                    skipped_rows += 1
+                    errors.append(f"Fila {index}: placa {plate} no existe.")
+                    continue
+                vehicle = Vehicle(
+                    tenant_id=user["tenant_id"],
+                    plate=plate,
+                    brand="Pendiente",
+                    model="Importado maestro llantas",
+                    year=date.today().year,
+                    mileage=0,
+                    status="active",
+                    notes=f"Creado automaticamente desde {payload.source_sheet}",
+                )
+                db.add(vehicle)
+                db.flush()
+                created_vehicles += 1
 
         tire = _find_tire_by_serial(db, user, serial)
         event_novelty = f"Importado desde {payload.source_sheet} fila {index}. Batch {batch_id}."
@@ -1752,10 +1752,10 @@ def import_tire_master_rows(
             "design": design,
             "dimension": dimension,
             "life_cycle": str(normalized["life_cycle"] or "VN"),
-            "position": position_code,
+            "position": position_code or "Bodega",
             "remaining_tread_mm": remaining_tread,
-            "vehicle_id": vehicle.id,
-            "status": _status_from_sheet(str(normalized["status_source"] or "")),
+            "vehicle_id": vehicle.id if vehicle else None,
+            "status": "available" if not vehicle else _status_from_sheet(str(normalized["status_source"] or "")),
             "location": str(normalized["location"] or ""),
             "site": _row_text(row, "sede", "site", "zona", "tipo posicion", "tipo posicion"),
             "provider": _row_text(row, "proveedor", "provider"),
@@ -1791,29 +1791,30 @@ def import_tire_master_rows(
             db.flush()
             created_tires += 1
 
-        position = (
-            db.query(VehicleTirePosition)
-            .filter(
-                _scope(VehicleTirePosition, user),
-                VehicleTirePosition.vehicle_id == vehicle.id,
-                VehicleTirePosition.position_code == position_code,
-            )
-            .first()
-        )
-        if position:
-            position.tire_id = tire.id
-            position.min_tread_mm = position.min_tread_mm or tire.min_tread_mm
-        else:
-            db.add(
-                VehicleTirePosition(
-                    tenant_id=user["tenant_id"],
-                    vehicle_id=vehicle.id,
-                    position_code=position_code,
-                    tire_id=tire.id,
-                    min_tread_mm=tire.min_tread_mm,
+        if vehicle and position_code:
+            position = (
+                db.query(VehicleTirePosition)
+                .filter(
+                    _scope(VehicleTirePosition, user),
+                    VehicleTirePosition.vehicle_id == vehicle.id,
+                    VehicleTirePosition.position_code == position_code,
                 )
+                .first()
             )
-            created_positions += 1
+            if position:
+                position.tire_id = tire.id
+                position.min_tread_mm = position.min_tread_mm or tire.min_tread_mm
+            else:
+                db.add(
+                    VehicleTirePosition(
+                        tenant_id=user["tenant_id"],
+                        vehicle_id=vehicle.id,
+                        position_code=position_code,
+                        tire_id=tire.id,
+                        min_tread_mm=tire.min_tread_mm,
+                    )
+                )
+                created_positions += 1
 
         existing_event = (
             db.query(TireEvent)
@@ -1830,7 +1831,7 @@ def import_tire_master_rows(
                 TireEvent(
                     tenant_id=user["tenant_id"],
                     tire_id=tire.id,
-                    vehicle_id=vehicle.id,
+                    vehicle_id=vehicle.id if vehicle else None,
                     event_type="master_import",
                     event_date=tire.purchase_date or date.today(),
                     position=position_code,
