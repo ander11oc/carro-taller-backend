@@ -30,6 +30,7 @@ from app.models.entities import (
     ClientPortalRecord,
     Requirement,
     AuditLog,
+    SystemLog,
 )
 from app.schemas.fleet import (
     VehicleCreate,
@@ -177,6 +178,38 @@ def _write_audit_log(
         )
     )
     db.commit()
+
+
+def _write_system_log(
+    db: Session,
+    user,
+    level: str,
+    module: str,
+    action: str,
+    summary: str,
+    detail: str = "",
+    entity_type: str = "",
+    entity_id: int | None = None,
+    duration_ms: int | None = None,
+):
+    try:
+        db.add(
+            SystemLog(
+                tenant_id=user["tenant_id"] if user else "system",
+                level=level,
+                module=module,
+                action=action,
+                actor_email=user.get("email", "system") if user else "system",
+                summary=summary,
+                detail=detail,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                duration_ms=duration_ms,
+            )
+        )
+        db.commit()
+    except Exception:
+        pass  # Logging must never crash the main flow
 
 
 def _normalize_requirement_state(item: Requirement) -> None:
@@ -1579,6 +1612,10 @@ def preview_tire_master_import(
     user=Depends(get_current_user),
 ):
     require_module_action(user, "tires", "import")
+    import time as _time
+    _t0 = _time.time()
+    _write_system_log(db, user, "info", "tires", "master-preview-start",
+        f"Preview iniciado: {len(payload.rows)} filas recibidas del frontend.")
     serial_counts: dict[str, int] = {}
     incomplete_count = 0
     missing_catalogs: dict[str, set[str]] = {"brand": set(), "design": set(), "dimension": set(), "site": set(), "status": set()}
@@ -1653,6 +1690,10 @@ def import_tire_master_rows(
     user=Depends(get_current_user),
 ):
     require_module_action(user, "tires", "import")
+    import time as _time
+    _t0 = _time.time()
+    _write_system_log(db, user, "info", "tires", "master-import-start",
+        f"Importación iniciada: {len(payload.rows)} filas, fuente: {payload.source_sheet or 'CSV'}.")
     batch_id = payload.import_batch_id or f"llantas-{uuid4().hex[:10]}"
     created_tires = 0
     updated_tires = 0
@@ -1850,7 +1891,15 @@ def import_tire_master_rows(
             created_events += 1
 
     db.commit()
+    _dur = int((_time.time() - _t0) * 1000)
     _write_audit_log(db, user, "tires", "master-import", None, f"{batch_id}: {created_tires} creadas, {updated_tires} actualizadas")
+    _level = "error" if errors and not created_tires and not updated_tires else ("warning" if errors else "success")
+    _write_system_log(
+        db, user, _level, "tires", "master-import-result",
+        f"Importación completada: {created_tires} nuevas, {updated_tires} actualizadas, {skipped_rows} omitidas.",
+        detail="\n".join(errors[:50]) if errors else "Sin errores.",
+        duration_ms=_dur,
+    )
     return TireMasterImportOut(
         total_rows=len(payload.rows),
         created_tires=created_tires,
@@ -3230,6 +3279,59 @@ def dashboard(db: Session = Depends(get_db), user=Depends(get_current_user)):
 def alerts(db: Session = Depends(get_db), user=Depends(get_current_user)):
     require_module_action(user, "alerts", "read")
     return get_fleet_alerts(db, user["tenant_id"], role=user.get("role", "viewer"))
+
+
+# =====================================================
+# System Logs — admin visibility
+# =====================================================
+@router.get("/system-logs")
+def get_system_logs(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    limit: int = Query(200, ge=1, le=1000),
+    level: str = Query(""),
+    module: str = Query(""),
+    q: str = Query(""),
+):
+    require_module_action(user, "audit-logs", "read")
+    query = db.query(SystemLog).filter(_scope(SystemLog, user))
+    if level:
+        query = query.filter(SystemLog.level == level)
+    if module:
+        query = query.filter(SystemLog.module == module)
+    if q:
+        query = query.filter(
+            SystemLog.summary.ilike(f"%{q}%")
+            | SystemLog.detail.ilike(f"%{q}%")
+            | SystemLog.action.ilike(f"%{q}%")
+        )
+    items = query.order_by(SystemLog.created_at.desc(), SystemLog.id.desc()).limit(limit).all()
+    return [
+        {
+            "id": i.id,
+            "level": i.level,
+            "module": i.module,
+            "action": i.action,
+            "actor_email": i.actor_email,
+            "summary": i.summary,
+            "detail": i.detail,
+            "entity_type": i.entity_type,
+            "entity_id": i.entity_id,
+            "duration_ms": i.duration_ms,
+            "created_at": i.created_at.isoformat() if i.created_at else None,
+        }
+        for i in items
+    ]
+
+
+@router.delete("/system-logs", status_code=204)
+def clear_system_logs(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    require_module_action(user, "audit-logs", "read")
+    db.query(SystemLog).filter(_scope(SystemLog, user)).delete()
+    db.commit()
 
 
 @router.get("/audit-logs", response_model=list[AuditLogOut])

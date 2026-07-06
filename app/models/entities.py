@@ -429,3 +429,20 @@ class NotificationMessage(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
+
+
+class SystemLog(Base, TimestampMixin):
+    __tablename__ = "system_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(80), index=True)
+    level: Mapped[str] = mapped_column(String(20), index=True, default="info")  # info | warning | error | success
+    module: Mapped[str] = mapped_column(String(80), index=True, default="")
+    action: Mapped[str] = mapped_column(String(120), index=True, default="")
+    actor_email: Mapped[str] = mapped_column(String(255), index=True, default="system")
+    summary: Mapped[str] = mapped_column(String(500), default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    entity_type: Mapped[str] = mapped_column(String(80), default="", index=True)
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ip_address: Mapped[str] = mapped_column(String(60), default="")
